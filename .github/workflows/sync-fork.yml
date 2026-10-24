@@ -1,0 +1,29 @@
+name: Sync fork
+
+on:
+  schedule:
+    - cron: '17 */4 * * *' # 每 4 小时同步一次（UTC 时间）
+  workflow_dispatch: # 允许在 Actions 页面手动触发
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Sync from upstream yetone/magpie
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/yetone/magpie.git
+          git fetch upstream main
+          if git merge --ff-only upstream/main; then
+            git push origin main
+          else
+            echo "::error::无法快进合并（fork 的 main 与上游分叉了），需要手动处理冲突"
+            exit 1
+          fi
