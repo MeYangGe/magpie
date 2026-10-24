@@ -1,9 +1,28 @@
 // Insights › Masking's code (client.js has its markup and hooks): run after
-// app.js, whose masking helpers it shares (maskWho, maskTip, maskColor,
+// app.js, whose masking helpers it shares (maskTip, maskColor,
 // maskShape, maskValue: Settings' Try it and the masked calls' badges use
 // them too). What a placeholder stood for is in this magpie's memory alone,
 // never on disk, so after a restart it is gone; so is the text a request
 // went out with (/api/masking/sent), kept for the newest requests only.
+
+const stillMotion = calm;
+// the providers' names, read once when the page opened before any page
+// that loads them
+let maskProv = null, maskProvAsked = false;
+function maskWho(id, kind) {
+  const x = kind === "agent" ? state.agents?.find((a) => a.id === id) : (providers || maskProv)?.providers?.find((p) => p.id === id);
+  return { name: x?.name || id || t("Unknown"), icon: x?.icon };
+}
+// what a request was, beside a chat (gateway's noteMasked)
+const MASK_WHAT = { search: "Web search", image: "Image", video: "Video", decide: "System One", embeddings: "Embeddings", audio: "Audio" };
+// maskDayName: Today, Yesterday or the date a masked request went on
+function maskDayName(when) {
+  const d = new Date(when), now = new Date();
+  const days = Math.round((new Date(now.toDateString()) - new Date(d.toDateString())) / 86400000);
+  if (days === 0) return t("Today");
+  if (days === 1) return t("Yesterday");
+  return d.toLocaleDateString(intlLang(), { weekday: "short", month: "short", day: "numeric" });
+}
 
 // ---- the summary: over 7 or 30 days, kept per machine ----
 let maskSumDays = 0, maskAt = 0, maskBusy = null, maskBusyDays = 0;
@@ -213,7 +232,12 @@ function maskFlow(sum, move) {
     for (const r of rows) {
       const b = el("button", "mo-node" + (r.id && maskL[kind] === r.id ? " on" : ""));
       b.type = "button";
-      b.append(el("span", "nm", r.name), el("span", "ct", fmtN(r.n)));
+      // its logo on the side the lines are: an agent's after its name, a
+      // provider's before it; "N more" keeps the room so the names line up
+      const ic = r.id ? icon(r.icon || "generic") : el("span", "ic");
+      const tx = el("span", "tx");
+      tx.append(el("span", "nm", r.name), el("span", "ct", fmtN(r.n)));
+      b.append(...(kind === "agent" ? [tx, ic] : [ic, tx]));
       if (r.id) {
         b.title = t("Show what {name} sent masked", { name: r.name });
         b.onclick = () => maskNarrow({ [kind]: maskL[kind] === r.id ? "" : r.id });

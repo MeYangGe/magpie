@@ -1,8 +1,8 @@
 package gateway
 
 // What a request's prompt is made of: the agent's system prompt, its tool
-// definitions, the instruction files it read in (CLAUDE.md, AGENTS.md,
-// skills), the files its tools read, its tools' other output, and the
+// definitions, the skills it lists, the instruction files it read in
+// (CLAUDE.md, AGENTS.md), the files its tools read, its tools' other output, and the
 // conversation, each as the tokens it takes of the model's context window.
 // Read from the body the agent sent, as it sent it: the parsed Request has
 // the system blocks run together, and Codex's additional_tools lifted out.
@@ -31,13 +31,14 @@ import (
 const (
 	PartSystem  = "system"  // the agent's own prompt: system, developer and harness messages
 	PartTools   = "tools"   // tool definitions
-	PartMemory  = "memory"  // instruction files, skills, reminders
+	PartSkills  = "skills"  // the skills the agent lists for the model to load
+	PartMemory  = "memory"  // instruction files, reminders
 	PartFiles   = "files"   // files and images the tools read in
 	PartResults = "results" // the tools' other output
 	PartChat    = "chat"    // what the user and the model said, the model's calls
 )
 
-var partOrder = []string{PartSystem, PartTools, PartMemory, PartFiles, PartResults, PartChat}
+var partOrder = []string{PartSystem, PartTools, PartSkills, PartMemory, PartFiles, PartResults, PartChat}
 
 // Prompt is a request's prompt, part by part.
 type Prompt struct {
@@ -95,6 +96,12 @@ func rawTokens(b json.RawMessage) int { return (len(b) + 3) / 4 }
 // counts for a 1092×1092 one.
 const imageTokens = 1600
 
+// promptBuilder reads a body through decodeJSONView: what it keeps of
+// the body, a piece's raw JSON, lives only as long as the builder, which
+// the body outlives (promptOf's request; promptPieces' kept body, its
+// pieces read out before PromptText returns). Each item's content and
+// output copied out was 0.8 of the 14.9 MB a 680 KB Codex request
+// allocated (#3383).
 type promptBuilder struct {
 	parts map[string]map[string]*PromptItem
 	turn  int
@@ -236,6 +243,40 @@ func (b *promptBuilder) prompt() *Prompt {
 	return p
 }
 
+// skillsApart reads a prompt kept when the skills were memory: they are
+// their own part, before it.
+func (p *Prompt) skillsApart() {
+	if p == nil {
+		return
+	}
+	for i, x := range p.Parts {
+		if x.Kind != PartMemory {
+			continue
+		}
+		skills := PromptPart{Kind: PartSkills}
+		kept := x.Items[:0:0]
+		for _, it := range x.Items {
+			if it.Tag == "skills" {
+				skills.Tokens += it.Tokens
+				skills.Items = append(skills.Items, it)
+			} else {
+				kept = append(kept, it)
+			}
+		}
+		if skills.Tokens == 0 {
+			return
+		}
+		x.Tokens -= skills.Tokens
+		x.Items = kept
+		parts := append(append(p.Parts[:i:i], skills), x)
+		if x.Tokens <= 0 {
+			parts = parts[:i+1]
+		}
+		p.Parts = append(parts, p.Parts[i+1:]...)
+		return
+	}
+}
+
 // promptOf reads what a request's prompt holds; nil when the body isn't
 // one it can read.
 func promptOf(from provider.Protocol, body []byte) (p *Prompt) {
@@ -370,6 +411,28 @@ func (b *promptBuilder) splitMemory(text string) string {
 	return rest.String()
 }
 
+// skillsList heads the skills Claude Code lists, in its own prompt or a
+// reminder; the list runs to the next blank line.
+const skillsList = "The following skills are available for use with the Skill tool:"
+
+// splitSkills takes the list of skills out of a text, as skills, and
+// returns what is left.
+func (b *promptBuilder) splitSkills(text, role string) string {
+	at := strings.Index(text, skillsList)
+	if at < 0 {
+		return text
+	}
+	body := text[at+len(skillsList):]
+	items := strings.TrimLeft(body, "\n")
+	end := len(text)
+	if j := strings.Index(items, "\n\n"); j >= 0 {
+		end -= len(items) - j
+	}
+	list := text[at:end]
+	b.add(PartSkills, "skills", "skills", tokensOf(list), txt(role, list))
+	return text[:at] + strings.TrimLeft(text[end:], "\n")
+}
+
 // harnessName names a system or developer text by its leading tag, or
 // what it is.
 func harnessName(text, fallback string) string {
@@ -385,9 +448,12 @@ func harnessName(text, fallback string) string {
 // systemText adds the agent's own prompt, with the instruction files in
 // it taken out as memory.
 func (b *promptBuilder) systemText(text, name string) {
-	rest := b.splitMemory(text)
+	rest := b.splitSkills(b.splitMemory(text), "system")
 	if strings.HasPrefix(strings.TrimSpace(rest), "<skills_instructions>") {
-		b.add(PartMemory, "skills", "skills", tokensOf(rest), txt("system", rest))
+		b.add(PartSkills, "skills", "skills", tokensOf(rest), txt("system", rest))
+		return
+	}
+	if strings.TrimSpace(rest) == "" {
 		return
 	}
 	b.add(PartSystem, harnessName(rest, name), "", tokensOf(rest), txt("system", rest))
@@ -399,7 +465,7 @@ func (b *promptBuilder) userText(text string) (said bool) {
 	t := strings.TrimSpace(text)
 	switch {
 	case strings.HasPrefix(t, "<system-reminder>"):
-		rest := b.splitMemory(t)
+		rest := b.splitSkills(b.splitMemory(t), "user")
 		rest = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(rest), "<system-reminder>"), "</system-reminder>"))
 		if rest != "" {
 			b.add(PartMemory, "reminders", "reminder", tokensOf(rest), txt("user", rest))
@@ -483,10 +549,10 @@ func filesOfCommand(cmd string) []string {
 func callOf(name string, input []byte) toolCall {
 	c := toolCall{name: name}
 	var args map[string]json.RawMessage
-	_ = decodeJSON(input, &args)
+	_ = decodeJSONView(input, &args)
 	str := func(k string) string {
 		var s string
-		if decodeJSON(args[k], &s) == nil {
+		if decodeJSONView(args[k], &s) == nil {
 			return s
 		}
 		return ""
@@ -505,7 +571,7 @@ func callOf(name string, input []byte) toolCall {
 	}
 	if cmd == "" {
 		var argv []string
-		if decodeJSON(args["command"], &argv) == nil {
+		if decodeJSONView(args["command"], &argv) == nil {
 			cmd = strings.Join(argv, " ")
 		}
 	}
@@ -585,11 +651,11 @@ type rawBlock struct {
 // blocksOf reads content that is a string or a list of blocks.
 func blocksOf(c json.RawMessage) []rawBlock {
 	var s string
-	if decodeJSON(c, &s) == nil {
+	if decodeJSONView(c, &s) == nil {
 		return []rawBlock{{Type: "text", Text: s}}
 	}
 	var bs []rawBlock
-	_ = decodeJSON(c, &bs)
+	_ = decodeJSONView(c, &bs)
 	return bs
 }
 
@@ -602,7 +668,7 @@ func (b *promptBuilder) anthropic(body []byte) bool {
 		} `json:"messages"`
 		Tools []json.RawMessage `json:"tools"`
 	}
-	if decodeJSON(body, &req) != nil {
+	if decodeJSONView(body, &req) != nil {
 		return false
 	}
 	for _, s := range blocksOf(req.System) {
@@ -616,7 +682,7 @@ func (b *promptBuilder) anthropic(body []byte) bool {
 		var d struct {
 			Name string `json:"name"`
 		}
-		_ = decodeJSON(t, &d)
+		_ = decodeJSONView(t, &d)
 		b.tool(d.Name, rawTokens(t), t)
 	}
 	for _, m := range req.Messages {
@@ -753,25 +819,24 @@ func (b *promptBuilder) responses(body []byte) bool {
 		Tools        []json.RawMessage `json:"tools"`
 		Previous     string            `json:"previous_response_id"`
 	}
-	if decodeJSON(body, &req) != nil {
+	if decodeJSONView(body, &req) != nil {
 		return false
 	}
 	b.held = req.Previous != ""
 	var ins string
-	if decodeJSON(req.Instructions, &ins) == nil && ins != "" {
+	if decodeJSONView(req.Instructions, &ins) == nil && ins != "" {
 		b.systemText(ins, "prompt")
 	}
 	for _, t := range req.Tools {
 		b.responsesTool(t)
 	}
 	var s string
-	if decodeJSON(req.Input, &s) == nil {
+	if decodeJSONView(req.Input, &s) == nil {
 		b.newTurn()
 		b.userText(s)
 		return true
 	}
-	var items []json.RawMessage
-	_ = decodeJSON(req.Input, &items)
+	items, _ := inputList(req.Input)
 	for _, it := range items {
 		b.responsesItem(it)
 	}
@@ -787,7 +852,7 @@ func (b *promptBuilder) responsesTool(t json.RawMessage) {
 			Name string `json:"name"`
 		} `json:"function"`
 	}
-	_ = decodeJSON(t, &d)
+	_ = decodeJSONView(t, &d)
 	name := d.Name
 	if name == "" && d.Function != nil {
 		name = d.Function.Name
@@ -836,7 +901,7 @@ func (b *promptBuilder) responsesItem(raw json.RawMessage) {
 		Encrypted string          `json:"encrypted_content"`
 		Action    json.RawMessage `json:"action"`
 	}
-	if decodeJSON(raw, &it) != nil {
+	if decodeJSONView(raw, &it) != nil {
 		return
 	}
 	if it.Type == "" && it.Role != "" {
@@ -898,7 +963,7 @@ func (b *promptBuilder) responsesItem(raw json.RawMessage) {
 	case "function_call_output", "custom_tool_call_output", "local_shell_call_output", "tool_search_output":
 		n := 0
 		var s string
-		if decodeJSON(it.Output, &s) == nil {
+		if decodeJSONView(it.Output, &s) == nil {
 			n = tokensOf(s)
 		} else {
 			var texts []string
@@ -933,7 +998,7 @@ type rPart struct {
 
 func responsesContent(c json.RawMessage) []rPart {
 	var s string
-	if decodeJSON(c, &s) == nil {
+	if decodeJSONView(c, &s) == nil {
 		return []rPart{{text: s}}
 	}
 	var ps []struct {
@@ -941,7 +1006,7 @@ func responsesContent(c json.RawMessage) []rPart {
 		Text     string          `json:"text"`
 		ImageURL json.RawMessage `json:"image_url"`
 	}
-	_ = decodeJSON(c, &ps)
+	_ = decodeJSONView(c, &ps)
 	out := make([]rPart, 0, len(ps))
 	for _, p := range ps {
 		out = append(out, rPart{text: p.Text, image: p.Type == "input_image" || p.Type == "input_file" || p.Type == "image_url", src: p.ImageURL})
@@ -968,7 +1033,7 @@ func (b *promptBuilder) chatCompletions(body []byte) bool {
 		} `json:"messages"`
 		Tools []json.RawMessage `json:"tools"`
 	}
-	if decodeJSON(body, &req) != nil {
+	if decodeJSONView(body, &req) != nil {
 		return false
 	}
 	for _, t := range req.Tools {
@@ -1054,7 +1119,7 @@ func (b *promptBuilder) gemini(body []byte) bool {
 			Decls []json.RawMessage `json:"functionDeclarations"`
 		} `json:"tools"`
 	}
-	if decodeJSON(body, &req) != nil {
+	if decodeJSONView(body, &req) != nil {
 		return false
 	}
 	if req.System != nil {
@@ -1067,7 +1132,7 @@ func (b *promptBuilder) gemini(body []byte) bool {
 			var n struct {
 				Name string `json:"name"`
 			}
-			_ = decodeJSON(d, &n)
+			_ = decodeJSONView(d, &n)
 			b.tool(n.Name, rawTokens(d), d)
 		}
 	}
