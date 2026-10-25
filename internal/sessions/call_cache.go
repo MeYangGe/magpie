@@ -44,6 +44,10 @@ import (
 // the version is part of the directory's name, so a cache written by an older
 // one is never read (pruneCalls).
 const callCacheVersion = "calls-v15"
+
+// CallCacheVersion is callCacheVersion, for a cache of what is made of the
+// calls (usage's requests-v1.bin).
+const CallCacheVersion = callCacheVersion
 const maxKeptCalls = 131072
 const maxKeptFiles = 64
 
@@ -539,7 +543,7 @@ func loadCalls(f file) *callFile {
 			return nil
 		}
 		var frame callFrame
-		if gob.NewDecoder(bytes.NewReader(data)).Decode(&frame) != nil || frame.State.Path != f.path || frame.State.Agent != f.agent {
+		if decodeFrame(data, &frame) != nil || frame.State.Path != f.path || frame.State.Agent != f.agent {
 			return nil
 		}
 		if st != nil && frame.State.Off < st.Off {

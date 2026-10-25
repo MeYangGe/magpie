@@ -1,8 +1,12 @@
 package sessions
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
+	"maps"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -73,6 +77,57 @@ func decodeCache(b []byte, zone string) (map[string]*state, bool) {
 	return files, true
 }
 
+// encodeCache writes c as json.Marshal does, a file's parse at a time: one
+// Marshal of a long history's 23MB grew its buffer to twice that, ~85MB a
+// save, and a save follows every refresh that read a changed file.
+func encodeCache(w io.Writer, c cacheFile) error {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	// put appends v as Marshal has it: Encode ends it with a newline
+	put := func(v any) error {
+		if err := enc.Encode(v); err != nil {
+			return err
+		}
+		b.Truncate(b.Len() - 1)
+		return nil
+	}
+	if err := put(struct {
+		Version int    `json:"version"`
+		Zone    string `json:"zone"`
+	}{c.Version, c.Zone}); err != nil {
+		return err
+	}
+	b.Truncate(b.Len() - 1)
+	b.WriteString(`,"files":`)
+	if c.Files == nil {
+		b.WriteString("null}")
+		_, err := w.Write(b.Bytes())
+		return err
+	}
+	b.WriteByte('{')
+	for i, k := range slices.Sorted(maps.Keys(c.Files)) {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		if err := put(k); err != nil {
+			return err
+		}
+		b.WriteByte(':')
+		if err := put(c.Files[k]); err != nil {
+			return err
+		}
+		if b.Len() >= 256<<10 {
+			if _, err := w.Write(b.Bytes()); err != nil {
+				return err
+			}
+			b.Reset()
+		}
+	}
+	b.WriteString("}}")
+	_, err := w.Write(b.Bytes())
+	return err
+}
+
 // share has st's strings that many files repeat held once: an agent run
 // by a script gives each of its sessions the same prompt, and a long
 // history's 23.7k copies of one ~420-byte title, with its cwds and model
@@ -87,6 +142,16 @@ func (st *state) share() {
 		for _, s := range []*string{&id.Role, &id.ParentSession, &id.RootSession} {
 			if *s != "" {
 				*s = unique.Make(*s).Value()
+			}
+		}
+	}
+	// a file of one day (15,345 of a long history's 15,624) has that day's
+	// models as its own: held once, they were ~10 of the 28MB kept. A kept
+	// state is never written: a parse writes a clone, which holds them apart.
+	if len(st.Days) == 1 {
+		for _, d := range st.Days {
+			if len(d.Models) == len(st.Models) && maps.Equal(d.Models, st.Models) {
+				d.Models = st.Models
 			}
 		}
 	}

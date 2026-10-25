@@ -1,9 +1,12 @@
 package usage
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -109,5 +112,88 @@ func TestRequestChunksFromDisk(t *testing.T) {
 	forget()
 	if page(); reads.Load() != all {
 		t.Fatalf("a bad file: %d reads, want %d", reads.Load(), all)
+	}
+}
+
+// The file is of the code that makes a call's rows, not of the binary: an
+// upgrade that changed no source of this package reads it as the last run
+// left it. The name is of every source file here but the tests, and of
+// the call shards' version.
+func TestRequestDiskNamesItsSource(t *testing.T) {
+	names, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := sha256.New()
+	io.WriteString(h, sessions.CallCacheVersion)
+	sources := 0
+	for _, name := range names {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintf(h, "\x00%s\x00%d\x00", name, len(b))
+		h.Write(b)
+		sources++
+	}
+	if want := fmt.Sprintf("source %x", h.Sum(nil)); requestDiskBinary() != want || sources < 10 {
+		t.Fatalf("named %q, want %q of %d source files", requestDiskBinary(), want, sources)
+	}
+}
+
+// Chunks of many rows made since the last write have the file written
+// once a run, though they are of few files: long sessions that ended
+// since were made again at every start. Once, as a session at work is
+// made again for each call.
+func TestRequestDiskRowsWrittenOnce(t *testing.T) {
+	pageHome(t)
+	now := holdClock(t, time.Date(2026, 9, 30, 12, 0, 0, 0, time.Local))
+	least, rows := requestDiskLeast, requestDiskLeastRows
+	requestDiskLeast, requestDiskLeastRows = 100, 3
+	requestCache.Lock()
+	requestCache.savedRows = false
+	requestCache.Unlock()
+	t.Cleanup(func() {
+		requestDiskLeast, requestDiskLeastRows = least, rows
+		requestCache.Lock()
+		requestCache.savedRows = false
+		requestCache.Unlock()
+	})
+	dir := filepath.Join(sessions.CodexDir(), "sessions", "2026", "09", "30")
+	rollout := func(i int) string {
+		return filepath.Join(dir, fmt.Sprintf("rollout-2026-09-30T10-00-0%d-s%d.jsonl", i, i))
+	}
+	write := func(i, input int) {
+		writeCodexCall(t, rollout(i), fmt.Sprintf("s%d", i), fmt.Sprintf("native-%d", i), `"cli"`, fmt.Sprintf("resp-%d", i), "m", "high", now.Add(-time.Duration(i+1)*time.Hour), input, i)
+	}
+	for i := range 5 {
+		write(i, 10)
+	}
+	page := func() RequestPage {
+		t.Helper()
+		got := queryPage(All, Filter{}, 0, 100, sessions.ReadCallSource)
+		requestDiskSaves.Wait()
+		return got
+	}
+	if p := page(); p.Total != 5 {
+		t.Fatalf("first page: %d rows, want 5", p.Total)
+	}
+	saved, err := os.ReadFile(requestDiskPath())
+	if err != nil {
+		t.Fatalf("5 rows of 5 files made, and no file of them: %v", err)
+	}
+	later := time.Now().Add(time.Minute)
+	for i := range 4 {
+		write(i, 20)
+		os.Chtimes(rollout(i), later, later)
+	}
+	if p := page(); p.Sum.Input != 20*4+10 {
+		t.Fatalf("second page: %d input, want %d", p.Sum.Input, 20*4+10)
+	}
+	if b, _ := os.ReadFile(requestDiskPath()); string(b) != string(saved) {
+		t.Fatalf("the file was written again for 4 rows")
 	}
 }

@@ -15,7 +15,6 @@ import (
 	"bufio"
 	"bytes"
 	"cmp"
-	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
@@ -563,7 +562,8 @@ func distinctPaths(fs []file) []file {
 // Dirs are the folders the sessions are read from: Claude Code's and
 // Codex's, and the other agents' where they keep sessions on this computer.
 func Dirs() []string {
-	out := []string{ClaudeDir(), CodexDir()}
+	out := []string{ClaudeDir()}
+	out = append(out, CodexDirs()...)
 	var named []os.FileInfo
 	for _, d := range []struct{ dir, sessions string }{
 		{OpenCodeDir(), OpenCodeDir()},
@@ -610,7 +610,21 @@ var rolloutName = regexp.MustCompile(`^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{
 // zstSuffix ends a rollout the Codex app has compressed.
 const zstSuffix = ".zst"
 
-func codexFiles() []file { return codexFilesIn(CodexDir()) }
+// codexFiles are the rollouts in every Codex folder of the user's
+// (appdir.CodexHomes): one ChatGPT account is one CODEX_HOME, and a
+// session is written into the folder of the account it ran under, so
+// reading CodexDir alone left out every other account's sessions and
+// calls (phantom3792 on X).
+func codexFiles() []file {
+	var out []file
+	for _, dir := range CodexDirs() {
+		out = append(out, codexFilesIn(dir)...)
+	}
+	return distinctPaths(out)
+}
+
+// CodexDirs are every Codex folder of the user's, CodexDir first.
+func CodexDirs() []string { return appdir.CodexHomes() }
 
 // walkLinked is filepath.WalkDir over root, which can be a link to the
 // folder: the Codex CLI keeps .codex on another drive by making
@@ -825,10 +839,6 @@ func writeCache(c *save) {
 	if saveHook != nil {
 		saveHook()
 	}
-	b, err := json.Marshal(c.cacheFile)
-	if err != nil {
-		return
-	}
 	dir := filepath.Dir(c.path)
 	if os.MkdirAll(dir, 0o755) != nil {
 		return
@@ -837,7 +847,10 @@ func writeCache(c *save) {
 	if err != nil {
 		return
 	}
-	_, err = tmp.Write(b)
+	w := bufio.NewWriterSize(tmp, 1<<20)
+	if err = encodeCache(w, c.cacheFile); err == nil {
+		err = w.Flush()
+	}
 	if cerr := tmp.Close(); err == nil {
 		err = cerr
 	}
@@ -1193,10 +1206,10 @@ func listSessions(limit int) []Session {
 	identities := codexIdentitySnapshot(files)
 	taskTitles := codexSubagentTaskTitles(files)
 
-	price := pricer()
+	price, titles := pricer(), codexTitleOf()
 	out := []Session{}
 	for _, k := range keys {
-		if s, ok := assemble(groups[k], price); ok {
+		if s, ok := assemble(groups[k], price, titles); ok {
 			setSessionCodexIdentity(&s, identities)
 			setSessionCodexTaskTitle(&s, taskTitles)
 			out = append(out, s)
@@ -1234,8 +1247,8 @@ func sessionID(fs []file) string {
 }
 
 // assemble puts a session together from its files' parses.
-func assemble(fs []file, price func(string) *catalog.Price) (Session, bool) {
-	s, ok := assembleListed(fs, price)
+func assemble(fs []file, price func(string) *catalog.Price, codexTitle func(string) string) (Session, bool) {
+	s, ok := assembleListed(fs, price, codexTitle)
 	if !ok {
 		return s, false
 	}
@@ -1254,7 +1267,7 @@ func assemble(fs []file, price func(string) *catalog.Price) (Session, bool) {
 // agent, id, title and usage. The stats ask it of every session on each
 // poll, and building every session's subagents there read each Claude Code
 // subagent's file again (3.5 GB of a live magpie's 6.3 GB of scans).
-func assembleListed(fs []file, price func(string) *catalog.Price) (Session, bool) {
+func assembleListed(fs []file, price func(string) *catalog.Price, codexTitle func(string) string) (Session, bool) {
 	sortSessionFiles(fs)
 	s := Session{Agent: fs[0].agent, Path: fs[0].path, Models: []Model{}, WSL: fs[0].wsl}
 	for _, f := range fs {
@@ -1308,7 +1321,7 @@ func assembleListed(fs []file, price func(string) *catalog.Price) (Session, bool
 	// Codex's thread name (session_index.jsonl), else the title the agent
 	// made, else the first prompt, else the first message
 	if s.Agent == "codex" && s.WSL == "" && custom == "" {
-		custom = CodexTitles([]string{s.ID})[s.ID]
+		custom = codexTitle(s.ID)
 	}
 	if s.Agent == "claude-desktop" && s.WSL == "" {
 		custom = cmp.Or(DesktopTitles([]string{s.ID})[s.ID], custom)
@@ -2128,9 +2141,9 @@ func Titles(keys []string) map[string]string {
 	titleFiles := append(append([]file(nil), fs...), parents...)
 	taskTitles := codexSubagentTaskTitles(titleFiles)
 	identities := codexIdentitySnapshot(fs)
-	price := pricer()
+	price, titles := pricer(), codexTitleOf()
 	for k, g := range groups {
-		if s, ok := assembleListed(g, price); ok {
+		if s, ok := assembleListed(g, price, titles); ok {
 			setSessionCodexIdentity(&s, identities)
 			setSessionCodexTaskTitle(&s, taskTitles)
 			if s.Title == "" {
@@ -2185,7 +2198,7 @@ func get(key string) (s Session, ok, found bool) {
 	} else {
 		refresh(fs, files)
 	}
-	s, ok = assemble(fs, pricer())
+	s, ok = assemble(fs, pricer(), codexTitleOf())
 	setSessionCodexIdentity(&s, identities)
 	setSessionCodexTaskTitle(&s, taskTitles)
 	return s, ok, true

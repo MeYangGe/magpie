@@ -1,11 +1,13 @@
 package sessions
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 	"unsafe"
 )
 
@@ -89,5 +91,70 @@ func TestDecodeCacheSharesRepeats(t *testing.T) {
 	}
 	if st := files["/s/3.jsonl"]; st.Title != "重要执行方式 1" || st.CodexIdentity.ID != "c3" {
 		t.Fatalf("file 3: %+v", st)
+	}
+}
+
+// A file of one day holds that day's models once, and a parse of it, from
+// a clone, counts a call once in each: the kept state is as it was read.
+func TestDecodeCacheSharesOneDaysModels(t *testing.T) {
+	m := `{"gpt-5.5":{"input":10,"output":2,"cache_read":0,"cache_write":0}}`
+	b := fmt.Sprintf(`{"version":%d,"zone":"z","files":{"/one":{"size":1,"models":%s,"days":{"2026-10-24":{"m":%s,"a":5}}},"/other":{"size":1,"models":%s,"days":{"2026-10-24":{"m":{"o3":{"input":1,"output":0,"cache_read":0,"cache_write":0}}}}},"/two":{"size":1,"models":%s,"days":{"2026-10-23":{"m":%s},"2026-10-24":{"a":1}}}}}`, cacheVersion, m, m, m, m, m)
+	files, ok := decodeCache([]byte(b), "z")
+	if !ok || len(files) != 3 {
+		t.Fatalf("decoded %d files, %v", len(files), ok)
+	}
+	same := func(a, b map[string]Tokens) bool {
+		return reflect.ValueOf(a).UnsafePointer() == reflect.ValueOf(b).UnsafePointer()
+	}
+	one, other, two := files["/one"], files["/other"], files["/two"]
+	if !same(one.Models, one.Days["2026-10-24"].Models) {
+		t.Errorf("a file of one day holds its models twice")
+	}
+	if same(other.Models, other.Days["2026-10-24"].Models) || same(two.Models, two.Days["2026-10-23"].Models) {
+		t.Errorf("models held once that aren't the same, or of a file of two days")
+	}
+	c := one.clone()
+	c.use("2026-10-24", "gpt-5.5", Tokens{Input: 1})
+	if c.Models["gpt-5.5"].Input != 11 || c.Days["2026-10-24"].Models["gpt-5.5"].Input != 11 {
+		t.Fatalf("a parse counted %d and %d, want 11 in each", c.Models["gpt-5.5"].Input, c.Days["2026-10-24"].Models["gpt-5.5"].Input)
+	}
+	c.dropUse("2026-10-24", "gpt-5.5", Tokens{Input: 11, Output: 2})
+	if len(c.Models) != 0 || c.Days["2026-10-24"] == nil || len(c.Days["2026-10-24"].Models) != 0 {
+		t.Fatalf("a parse took back to %v and %+v", c.Models, c.Days["2026-10-24"])
+	}
+	if one.Models["gpt-5.5"].Input != 10 || one.Days["2026-10-24"].Models["gpt-5.5"].Input != 10 {
+		t.Fatalf("the kept state was written: %v", one.Models)
+	}
+}
+
+// A save writes the file json.Marshal would, byte for byte, a file's parse
+// at a time: keys in order and escaped as Marshal escapes them, a file of
+// no parse, an empty index and none at all.
+func TestEncodeCacheIsMarshal(t *testing.T) {
+	at := time.Date(2026, 10, 25, 7, 0, 0, 0, time.UTC)
+	files := map[string]*state{"/b/<a&b>.jsonl": {Size: 3, Mod: 9, Title: "a <b> & \"c\"  ", Start: at, Last: at, Models: map[string]Tokens{"m": {Input: 1}}}, "/a/x.jsonl": nil}
+	for i := range 3000 {
+		files[fmt.Sprintf("/s/%04d.jsonl", i)] = &state{Size: int64(i), Cwd: strings.Repeat("d", i%300), Start: at, Last: at.Add(time.Duration(i) * time.Second)}
+	}
+	for _, c := range []cacheFile{
+		{Version: cacheVersion, Zone: "28800/28800", Files: files},
+		{Version: cacheVersion, Zone: "<z>", Files: map[string]*state{}},
+		{Version: cacheVersion, Zone: "0/0"},
+	} {
+		want, err := json.Marshal(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got bytes.Buffer
+		if err := encodeCache(&got, c); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got.Bytes(), want) {
+			n := 0
+			for n < min(got.Len(), len(want)) && got.Bytes()[n] == want[n] {
+				n++
+			}
+			t.Fatalf("%d files: %d bytes, want %d; apart at %d: %.80q", len(c.Files), got.Len(), len(want), n, got.Bytes()[n:])
+		}
 	}
 }
