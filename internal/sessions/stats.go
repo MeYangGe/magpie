@@ -2,6 +2,7 @@ package sessions
 
 import (
 	"cmp"
+	"maps"
 	"math"
 	"slices"
 	"sort"
@@ -189,10 +190,7 @@ func statsRead(days int, now time.Time, native map[string]bool) Stats {
 	identities := codexIdentitySnapshot(files)
 	taskTitles := codexSubagentTaskTitles(files)
 	if native != nil {
-		groups := map[string][]file{}
-		for _, f := range files {
-			groups[f.key] = append(groups[f.key], f)
-		}
+		groups := byKey(files, nil)
 		price, titles := pricer(), codexTitleOf()
 		for _, fs := range groups {
 			// as List: a session nothing was said in is not listed
@@ -374,12 +372,7 @@ func statsRead(days int, now time.Time, native map[string]bool) Stats {
 		}
 	}
 
-	groups := map[string][]file{}
-	for _, f := range files {
-		if shares[f.key] != nil {
-			groups[f.key] = append(groups[f.key], f)
-		}
-	}
+	groups := byKey(files, func(f *file) bool { return shares[f.key] != nil })
 	first, _ := time.ParseInLocation(time.DateOnly, out.From, time.Local)
 	for key, sh := range shares {
 		if len(sh.dates) == 0 {
@@ -405,7 +398,9 @@ func statsRead(days int, now time.Time, native map[string]bool) Stats {
 			}
 		}
 		slices.SortFunc(sum.perDay, func(a, b summaryDay) int { return cmp.Compare(a.day, b.day) })
-		for model, t := range sh.models {
+		// in the models' order, as assembleListed sums a session's cost
+		for _, model := range slices.Sorted(maps.Keys(sh.models)) {
+			t := sh.models[model]
 			sum.Tokens.add(t)
 			sum.Models = append(sum.Models, model)
 			if p := price(model); p != nil {

@@ -1112,6 +1112,8 @@ function routingPage(part) {
   const ms1 = (n) => n < 10 ? t("{n} ms", { n: (Math.round(n * 10) / 10).toString() }) : took(Math.round(n));
   function timeParts(tr) {
     const n = tr.net, out = [], add = (who, label, v) => { if (v >= 0.1) out.push({ who, label, v }); };
+    // the request's masking, before its first try (Route.masking)
+    add("magpie", "Masking", tr.masking || 0);
     if (!n) return out;
     add("magpie", "Waiting for a slot", tr.queued || 0);
     add("magpie", "In magpie", n.own || 0);
@@ -2671,9 +2673,11 @@ function routingPage(part) {
     for (const a of asides(r)) items.push([a, "aside"]);
     r.tries.forEach((tr, i) => {
       items.push([tryWhy(r, i), tr.done ? (tryOk(tr) ? "ok" : "bad") : "wait"]);
-      // where its time went, once it is done
-      const when = tr.done && timeSaid(tr);
-      if (when) items.push([when, "aside time", tr]);
+      // where its time went, once it is done: the first try's has the
+      // request's masking before it
+      const timed = i === 0 && r.masking > 0 ? { ...tr, masking: r.masking } : tr;
+      const when = tr.done && timeSaid(timed);
+      if (when) items.push([when, "aside time", timed]);
       // each model Copilot's Auto picked for it, where from, and whether
       // Copilot refused it, on which API and with Auto's session token or
       // without (#256)
@@ -2896,11 +2900,17 @@ function routingPage(part) {
   // try (#1894)
   const endWord = (r, last) => `${r.status} · ${failWord(last.gone ? "canceled" : last.fail)}`;
 
+  // what a request not yet out at a vendor is doing: being masked
+  // (Settings → Privacy, the gateway's "redact" phase), or being routed
+  // (fremontdango on Discord: a long request read as routing while it
+  // was masked)
+  const waitWord = (r) => t(r.phase === "redact" ? "masking…" : "routing…");
+
   // who answered a request, or what its agent got
   function outcome(r) {
     if (!r.done) {
       const tr = r.tries[r.tries.length - 1], w = tr && tried(r, tr);
-      return [w ? t("{who} is answering…", { who: `${who(w)} · ${w.model}` }) : t("routing…"), "wait", tr];
+      return [w ? t("{who} is answering…", { who: `${who(w)} · ${w.model}` }) : waitWord(r), "wait", tr];
     }
     const ok = r.tries.find((tr) => tr.done && tryOk(tr)), w = ok && tried(r, ok);
     // a 200 whose error is a note of its own — Codex's titles off in
@@ -7124,7 +7134,7 @@ function routingPage(part) {
     const to = el("span", "pr-to");
     to.append(el("i", "", "→"));
     const place = w ? where(w) : r.provider;
-    if (!r.done) to.append(el("span", "pr-where", w ? t("{who} is answering…", { who: place }) : t("routing…")));
+    if (!r.done) to.append(el("span", "pr-where", w ? t("{who} is answering…", { who: place }) : waitWord(r)));
     else if (how === "bad") {
       const last = r.tries[r.tries.length - 1];
       to.append(el("span", "pr-where", last ? endWord(r, last) : `${r.status || ""} ${r.error || ""}`.trim()));

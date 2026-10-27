@@ -361,14 +361,26 @@ func (s *state) clone() *state {
 	return &c
 }
 
-// file is one session file found on disk.
+// file is one session file found on disk. What only some agents' files
+// have is in more, so a listing of every rollout copies 96 bytes a file,
+// not 232: a Sessions poll copied every agent's list of ~20k files five
+// or six times over, ~50 MB a poll.
 type file struct {
-	agent string
-	key   string // agent:session id — a session may span files
-	path  string
-	main  bool // the session's own file, not a subagent's
-	size  int64
-	mod   time.Time
+	agent    string
+	key      string // agent:session id — a session may span files
+	path     string
+	size     int64
+	mod      time.Time
+	main     bool // the session's own file, not a subagent's
+	readOnly bool
+	// cold: the WSL distro the file is in isn't running, and the file, as
+	// last listed, is not to be opened (that would start the distro)
+	cold bool
+	more *fileMore // nil for a file with none of it; shared by copies
+}
+
+// fileMore is what a file of some agents has besides.
+type fileMore struct {
 	// OpenCode and ZCode: the session, and where it is kept; parent is
 	// the session that started it, "" for one the user did
 	sid    string
@@ -383,14 +395,54 @@ type file struct {
 	alma *almaStore
 	rev  string
 	// agy: what conversation_summaries.db says of the conversation
-	agy      *agySummary
-	readOnly bool
-	editor   *cursorEditorMeta
-	// wsl: the WSL distro whose home it is in; cold: that distro isn't
-	// running, and the file, as last listed, is not to be opened (that
-	// would start the distro)
-	wsl  string
-	cold bool
+	agy    *agySummary
+	editor *cursorEditorMeta
+	// wsl: the WSL distro whose home it is in
+	wsl string
+}
+
+// m is what more holds, or none of it. It is a copy: a write goes through w.
+func (f file) m() fileMore {
+	if f.more == nil {
+		return fileMore{}
+	}
+	return *f.more
+}
+
+// w is f's own more to write: copies of f share it, so it is copied first.
+func (f *file) w() *fileMore {
+	m := f.m()
+	f.more = &m
+	return f.more
+}
+
+// byKey groups the files keep takes by session, each group in the files'
+// order. The groups are cut from one copy of the kept files rather than
+// grown an append at a time: a file is a few hundred bytes, and a Sessions
+// poll grouped every one of ~16k files three times, ~150 MB in eight polls.
+// A nil keep takes every file.
+func byKey(files []file, keep func(*file) bool) map[string][]file {
+	count := map[string]int{}
+	n := 0
+	for i := range files {
+		if keep == nil || keep(&files[i]) {
+			count[files[i].key]++
+			n++
+		}
+	}
+	kept := make([]file, n)
+	groups := make(map[string][]file, len(count))
+	at := 0
+	for k, c := range count {
+		groups[k] = kept[at : at : at+c]
+		at += c
+	}
+	for i := range files {
+		if f := &files[i]; keep == nil || keep(f) {
+			groups[f.key] = append(groups[f.key], *f)
+		}
+	}
+	return groups
 }
 
 // ClaudeDir is Claude Code's folder: $CLAUDE_CONFIG_DIR, else ~/.claude.
@@ -408,40 +460,49 @@ func stat(f *file) bool {
 	return true
 }
 
-// statFiles fills in each file's size and modification time from info(i),
-// or leaves the file out when it is gone or no regular file. Every
-// Requests page walks every session folder again, and stat()ing ~16k files
-// one after another was most of that walk (#3493), so they are stat()ed on
-// a few goroutines.
-func statFiles(files []file, info func(i int) (os.FileInfo, error)) []file {
+// statFiles fills in each file's size and modification time, as os.Stat
+// gives them when follow is set and os.Lstat when it isn't, or leaves the
+// file out when it is gone or no regular file. Every Requests page and
+// every 15 s Sessions poll walks every session folder again, and stat()ing
+// ~21k files one after another was most of that walk (#3493): each folder
+// is read in one listing where the system has one (dirent.Stats), and the
+// rest are stat()ed on a few goroutines.
+func statFiles(files []file, follow bool) []file {
+	dirs := map[string]dirent.Listing{}
+	var order []string
+	for _, f := range files {
+		d := filepath.Dir(f.path)
+		if _, seen := dirs[d]; !seen {
+			dirs[d] = nil
+			order = append(order, d)
+		}
+	}
+	listed := make([]dirent.Listing, len(order))
+	parallel(len(order), 8, func(i int) {
+		if s, ok := dirent.Stats(order[i]); ok {
+			listed[i] = s
+		}
+	})
+	for i, d := range order {
+		dirs[d] = listed[i]
+	}
 	ok := make([]bool, len(files))
-	one := func(i int) {
-		if fi, err := info(i); err == nil && fi.Mode().IsRegular() {
-			files[i].size, files[i].mod, ok[i] = fi.Size(), fi.ModTime(), true
+	parallel(len(files), 256, func(i int) {
+		f := &files[i]
+		if in := dirs[filepath.Dir(f.path)]; in != nil {
+			s, there := in.Get(filepath.Base(f.path))
+			if !there || s.Mode != 0 && (s.Mode != fs.ModeSymlink || !follow) {
+				return
+			}
+			if s.Mode == 0 {
+				f.size, f.mod, ok[i] = s.Size, s.Mod, true
+				return
+			}
 		}
-	}
-	if workers := min(runtime.GOMAXPROCS(0), 8, len(files)/256); workers < 2 {
-		for i := range files {
-			one(i)
+		if fi, err := statOne(f.path, follow); err == nil && fi.Mode().IsRegular() {
+			f.size, f.mod, ok[i] = fi.Size(), fi.ModTime(), true
 		}
-	} else {
-		var next atomic.Int64
-		var wg sync.WaitGroup
-		for range workers {
-			wg.Go(func() {
-				for {
-					i := int(next.Add(64)) - 64
-					if i >= len(files) {
-						return
-					}
-					for j := i; j < min(i+64, len(files)); j++ {
-						one(j)
-					}
-				}
-			})
-		}
-		wg.Wait()
-	}
+	})
 	kept := files[:0]
 	for i, f := range files {
 		if ok[i] {
@@ -451,12 +512,53 @@ func statFiles(files []file, info func(i int) (os.FileInfo, error)) []file {
 	return kept
 }
 
+// statOne is a file statFiles asks after alone: where no listing said, or
+// a link it follows.
+var statOne = func(path string, follow bool) (os.FileInfo, error) {
+	if follow {
+		return os.Stat(path)
+	}
+	return os.Lstat(path)
+}
+
+// parallel runs one(i) for each i below n, on a few goroutines when there
+// are more than per for each.
+func parallel(n, per int, one func(i int)) {
+	workers := min(runtime.GOMAXPROCS(0), 8, n/per)
+	if workers < 2 {
+		for i := range n {
+			one(i)
+		}
+		return
+	}
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Go(func() {
+			for {
+				i := int(next.Add(64)) - 64
+				if i >= n {
+					return
+				}
+				for j := i; j < min(i+64, n); j++ {
+					one(j)
+				}
+			}
+		})
+	}
+	wg.Wait()
+}
+
 // ccFiles are the session files of an agent that keeps them as Claude Code
 // does, under its folder's projects/: a session's own <id>.jsonl in its
 // project's folder, its subagents' in <id>/subagents/, and the agents of
 // its workflows (ultracode) in <id>/subagents/workflows/<run>/agent-*.jsonl
 // — beside each run's journal.jsonl, which isn't a transcript.
 func ccFiles(agent, dir string) []file {
+	return heldFiles("cc\x00"+agent+"\x00"+dir, func() []file { return listCCFiles(agent, dir) })
+}
+
+func listCCFiles(agent, dir string) []file {
 	projects := filepath.Join(dir, "projects")
 	var out []file
 	for _, project := range readDirectory(projects) {
@@ -494,7 +596,7 @@ func ccFiles(agent, dir string) []file {
 			}
 		}
 	}
-	return statFiles(out, func(i int) (os.FileInfo, error) { return os.Stat(out[i].path) })
+	return statFiles(out, true)
 }
 
 // allFiles are every agent's session files.
@@ -590,7 +692,7 @@ const zstSuffix = ".zst"
 // calls (phantom3792 on X).
 func codexFiles() []file {
 	if !quiet() {
-		return listCodexFiles()
+		return heldFiles("codex", listCodexFiles)
 	}
 	warmListing.Lock()
 	defer warmListing.Unlock()
@@ -626,7 +728,13 @@ func forgetWarmListing() {
 func listCodexFiles() []file {
 	var out []file
 	for _, dir := range CodexDirs() {
-		out = append(out, codexFilesIn(dir)...)
+		// one folder's listing is the whole of it: copied, it was ~65 MB
+		// of what eight Sessions polls allocated
+		if out == nil {
+			out = codexFilesIn(dir)
+		} else {
+			out = append(out, codexFilesIn(dir)...)
+		}
 	}
 	return distinctPaths(out)
 }
@@ -664,9 +772,18 @@ func walkLinked(root string, fn fs.WalkDirFunc) error {
 // codexFilesIn are the rollouts in a Codex folder.
 func codexFilesIn(dir string) []file {
 	var out []file
-	var entries []fs.DirEntry
 	for _, folder := range []string{"sessions", "archived_sessions"} {
-		walkLinked(filepath.Join(dir, folder), func(p string, d os.DirEntry, err error) error {
+		root := filepath.Join(dir, folder)
+		if listed, ok := listedRollouts(root); ok {
+			if out == nil {
+				out = listed
+			} else {
+				out = append(out, listed...)
+			}
+			continue
+		}
+		var found []file
+		walkLinked(root, func(p string, d os.DirEntry, err error) error {
 			if err != nil || d.IsDir() {
 				return nil
 			}
@@ -674,12 +791,11 @@ func codexFilesIn(dir string) []file {
 			if m == nil {
 				return nil
 			}
-			out = append(out, file{agent: "codex", key: "codex:" + m[1], path: p, main: true})
-			entries = append(entries, d)
+			found = append(found, file{agent: "codex", key: "codex:" + m[1], path: p, main: true})
 			return nil
 		})
+		out = append(out, statFiles(found, false)...)
 	}
-	out = statFiles(out, func(i int) (os.FileInfo, error) { return entries[i].Info() })
 	// During compression, prefer the readable plain twin in the same
 	// directory: the new compressed file may not have its trailer yet.
 	plain := map[string]bool{}
@@ -695,6 +811,63 @@ func codexFilesIn(dir string) []file {
 		}
 	}
 	return distinctCodexFiles(kept)
+}
+
+// rolloutsListed is how many rollouts each root's last listing found.
+var rolloutsListed sync.Map
+
+// listedRollouts are the rollouts under root, in walkLinked's order and
+// with their sizes and times, read with one listing a folder
+// (dirent.Stats) rather than a listing and an lstat() a file: Codex's day
+// folders were listed twice and every rollout lstat()ed on each 15 s
+// Sessions poll. ok is false when a folder couldn't be read so, and
+// walkLinked and statFiles read root instead.
+func listedRollouts(root string) (out []file, ok bool) {
+	// sized as the last listing of root was: grown a rollout at a time,
+	// ~20k of them allocated five times their size on every poll
+	if n, ok := rolloutsListed.Load(root); ok {
+		out = make([]file, 0, n.(int)+n.(int)/16)
+	}
+	defer func() {
+		if ok {
+			rolloutsListed.Store(root, len(out))
+		}
+	}()
+	walk := root
+	if fi, err := os.Lstat(root); err != nil {
+		return nil, false
+	} else if !fi.IsDir() {
+		real, err := proc.RealPath(root)
+		if err != nil {
+			return nil, false
+		}
+		walk = real
+	}
+	var in func(real, shown string) bool
+	in = func(real, shown string) bool {
+		entries, ok := dirent.Stats(real)
+		if !ok {
+			return false
+		}
+		for _, e := range entries {
+			name := e.Name
+			switch e.Mode {
+			case fs.ModeDir:
+				if !in(filepath.Join(real, name), filepath.Join(shown, name)) {
+					return false
+				}
+			case 0:
+				if m := rolloutName.FindStringSubmatch(name); m != nil {
+					out = append(out, file{agent: "codex", key: "codex:" + m[1], path: filepath.Join(shown, name), main: true, size: e.Size, mod: e.Mod})
+				}
+			}
+		}
+		return true
+	}
+	if !in(walk, root) {
+		return nil, false
+	}
+	return out, true
 }
 
 // rolloutTwin is a Codex rollout's file in its other form: the compressed
@@ -786,7 +959,8 @@ func loadCache() {
 // for a long history) takes a second or more, so it is done behind the
 // request: the parses in the cache are never changed once put there (a new
 // parse starts from a clone), so a copy of the map is a snapshot; saves in a
-// row are folded into the latest.
+// row are folded into the latest, and one is written saveGap after the
+// last at the soonest.
 func saveCache() {
 	snap := save{cacheFile{Version: cacheVersion, Zone: zone(), Files: maps.Clone(cache)}, CachePath()}
 	saving.Lock()
@@ -799,25 +973,57 @@ func saveCache() {
 	go func() {
 		for {
 			saving.Lock()
+			wait := saveGap - time.Since(saving.wrote)
+			if saving.hurry {
+				wait = 0
+			}
+			saving.Unlock()
+			if wait > 0 {
+				select {
+				case <-time.After(wait):
+				case <-saveNow:
+				}
+			}
+			saving.Lock()
 			f := saving.next
 			saving.next = nil
 			if f == nil {
-				saving.running = false
+				saving.running, saving.hurry = false, false
+				select { // a Saved's wake-up, unused, cuts no later gap
+				case <-saveNow:
+				default:
+				}
 				saving.Broadcast()
 				saving.Unlock()
 				return
 			}
 			saving.Unlock()
 			writeCache(f)
+			saving.Lock()
+			saving.wrote = time.Now()
+			saving.Unlock()
 		}
 	}()
 }
+
+// saveGap is how long a save waits after the last one written. A Sessions
+// or Usage page polls every 15 s, and a live session changes its file
+// between any two, so each poll wrote the whole index again: tens of MB
+// for a long history, ~20 MB allocated to encode it each time. The index
+// only spares the next start a read; what a save not yet written misses is
+// read again then. Saved does not wait it out.
+var saveGap = time.Minute
+
+// saveNow wakes a save waiting out saveGap once saving.hurry is set.
+var saveNow = make(chan struct{}, 1)
 
 var saving struct {
 	sync.Mutex
 	*sync.Cond
 	running bool
 	next    *save
+	wrote   time.Time // when the last save was written
+	hurry   bool      // Saved is waiting: no save waits out saveGap
 }
 
 type save struct {
@@ -831,9 +1037,16 @@ func init() { saving.Cond = sync.NewCond(&saving.Mutex) }
 // it on disk.
 func Saved() { saved() }
 
-// saved waits for the saves under way.
+// saved waits for the saves under way, written without their saveGap.
 func saved() {
 	saving.Lock()
+	if saving.running {
+		saving.hurry = true
+		select {
+		case saveNow <- struct{}{}:
+		default:
+		}
+	}
 	for saving.running {
 		saving.Wait()
 	}
@@ -878,7 +1091,7 @@ func refresh(want, all []file) {
 		if f.cold {
 			continue // in a stopped WSL distro: what was read of it stands
 		}
-		if s := cache[f.path]; s == nil || s.Size != f.size || s.Mod != f.mod.UnixNano() || (f.agent == "hermes" && (f.hermes == nil || f.rev == "" || s.DBRevision != f.rev)) || ((f.agent == "alma" || f.agent == "cursor" || f.agent == "agy") && s.DBRevision != f.rev) {
+		if s := cache[f.path]; s == nil || s.Size != f.size || s.Mod != f.mod.UnixNano() || (f.agent == "hermes" && (f.m().hermes == nil || f.m().rev == "" || s.DBRevision != f.m().rev)) || ((f.agent == "alma" || f.agent == "cursor" || f.agent == "agy") && s.DBRevision != f.m().rev) {
 			if parsing[f.path] != nil {
 				// a refresh is reading it, another or this one (a path
 				// listed twice): its last parse stands until that one is
@@ -1187,10 +1400,9 @@ func listSessions(limit int) []Session {
 
 	defer useDBs()()
 	files := allFiles()
-	groups := map[string][]file{}
+	groups := byKey(files, nil)
 	latest := map[string]time.Time{}
 	for _, f := range files {
-		groups[f.key] = append(groups[f.key], f)
 		if f.mod.After(latest[f.key]) {
 			latest[f.key] = f.mod
 		}
@@ -1278,7 +1490,7 @@ func assemble(fs []file, price func(string) *catalog.Price, codexTitle func(stri
 // subagent's file again (3.5 GB of a live magpie's 6.3 GB of scans).
 func assembleListed(fs []file, price func(string) *catalog.Price, codexTitle func(string) string) (Session, bool) {
 	sortSessionFiles(fs)
-	s := Session{Agent: fs[0].agent, Path: fs[0].path, Models: []Model{}, WSL: fs[0].wsl}
+	s := Session{Agent: fs[0].agent, Path: fs[0].path, Models: []Model{}, WSL: fs[0].m().wsl}
 	for _, f := range fs {
 		s.ReadOnly = s.ReadOnly || f.readOnly
 	}
@@ -1336,7 +1548,10 @@ func assembleListed(fs []file, price func(string) *catalog.Price, codexTitle fun
 		custom = cmp.Or(DesktopTitles([]string{s.ID})[s.ID], custom)
 	}
 	s.Title = cmp.Or(custom, named, s.Title, first)
-	for _, m := range models {
+	// in the models' order: summed in the map's, the cost came out a last
+	// digit apart from read to read, and the session's row read as changed
+	for _, name := range slices.Sorted(maps.Keys(models)) {
+		m := models[name]
 		if p := price(m.Model); p != nil {
 			// a sum of the session's calls of the model, at its base price:
 			// which call went over a long-context tier isn't known here
@@ -2143,11 +2358,10 @@ func Titles(keys []string) map[string]string {
 	loadCache()
 	defer useDBs()()
 	files := allFiles()
-	groups := map[string][]file{}
+	groups := byKey(files, func(f *file) bool { return want[f.key] })
 	var fs []file
 	for _, f := range files {
 		if want[f.key] {
-			groups[f.key] = append(groups[f.key], f)
 			fs = append(fs, f)
 		}
 	}

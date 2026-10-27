@@ -93,6 +93,18 @@ const modelFavorites = new Set(Array.isArray(savedModelFavorites) ? savedModelFa
 const favoriteKey = (o) => o.ref || o.value;
 const isFavorite = (o) => modelFavorites.has(favoriteKey(o)) || modelFavorites.has(o.value);
 
+// The reads the page asks for again and again and mostly finds the same
+// (writeJSONSame in api.go): the tag of the answer last read goes with the
+// next ask, and an answer that is the same comes back with no body and is
+// the object read before. The Sessions tab's ~8 MB list was read, parsed and
+// compared every 15 s over a long history.
+const sameReads = new Map();
+const readsSame = (path) => /^sessions(\?|$)|^sessions\/stats\?/.test(path);
+// each such answer's tag: two answers with tags are the same only when they
+// are one object, so the Sessions tab needn't compare ~8 MB to know
+const readTags = new WeakMap();
+const sameRead = (a, b) => a === b || !(readTags.has(a) && readTags.has(b)) && JSON.stringify(a) === JSON.stringify(b);
+
 // heads, when given, is shown the answer's headers (loadQuotas' X-Magpie-Reading);
 // signal, when given, cancels the request (a read the reader moved on from)
 async function api(path, body, heads, signal) {
@@ -102,13 +114,16 @@ async function api(path, body, heads, signal) {
   // reaches the default omp row (#1187). Only # is encoded: ? = & stay a
   // query string, which encodeURIComponent would turn into a 404.
   path = path.replace(/#/g, "%23");
+  const same = body === undefined && readsSame(path);
+  const had = same ? sameReads.get(path) : undefined;
   const res = await fetch("/api/" + path, {
     method: body === undefined ? "GET" : "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: had ? { "Content-Type": "application/json", "X-Magpie-Had": had.tag } : { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
     signal,
   });
   heads?.(res.headers);
+  if (had && res.ok && res.headers.get("X-Magpie-Same")) return had.data;
   if (res.status === 204) return null;
   // a body that isn't JSON (a proxy's or a plain http.Error) is the error
   // itself, not WebKit's "did not match the expected pattern"
@@ -171,6 +186,16 @@ async function api(path, body, heads, signal) {
   // the accounts it names, for Hide accounts to know them (#568); a
   // session's or a library's words aren't looked through
   if (data && typeof data === "object" && !/^(sessions|library|skills|plugins|market)/.test(path)) noteAccounts(data);
+  // a list changed since the one the page has (writeJSONRows in api.go):
+  // only its new rows are sent, and [from, count] for each run of the old
+  const delta = had && res.headers.get("X-Magpie-Delta");
+  const was = delta && had.data?.[delta];
+  if (Array.isArray(was) && Array.isArray(data?.[delta])) data[delta] = data[delta].flatMap((r) => Array.isArray(r) ? was.slice(r[0], r[0] + r[1]) : [r]);
+  const tag = same && res.headers.get("X-Magpie-Tag");
+  if (tag) {
+    sameReads.set(path, { tag, data });
+    if (data && typeof data === "object") readTags.set(data, tag);
+  }
   return data;
 }
 
@@ -2057,7 +2082,12 @@ function connectPanel(a, { fields, fieldBtn }) {
     const cp = el("button", "ag-quiet", t("Copy"));
     cp.type = "button";
     cp.onclick = () => copy(a.launch, t("Launch command"), null, t("Copied — run it to start {name} on magpie", { name: a.name }));
-    kv(t("Start it with"), line(code(a.launch), cp));
+    // a function magpie gave the user's shells starts it (agy): typed in a
+    // new terminal; the command is for one open before
+    if (a.typed) {
+      kv(t("Start it with"), line(code(a.typed), el("span", "ag-hint", t("in a new terminal"))));
+      kv(t("In a terminal open now"), line(code(a.launch), cp));
+    } else kv(t("Start it with"), line(code(a.launch), cp));
   }
   // the files magpie changed, and the way back
   const foot = el("div", "ag-foot");
@@ -3254,7 +3284,11 @@ async function openAgentModels(a, anchor, ev) {
     groups.sort((x, y) => (y.name === ROUTING_GROUPS) - (x.name === ROUTING_GROUPS));
   };
   regroup();
-  const shut = new Set(groups.filter((g) => groups.length > 1 && g.models.length > 8 && !g.models.some((m) => m.inUse)).map((g) => g.name));
+  // folding is for telling providers apart: routing groups don't count,
+  // so a group switched on never folds away the one provider's models
+  // (shiqi_40904 on Discord)
+  const providers = groups.filter((g) => g.name !== ROUTING_GROUPS).length;
+  const shut = new Set(groups.filter((g) => providers > 1 && g.models.length > 8 && !g.models.some((m) => m.inUse)).map((g) => g.name));
   // with a few providers, a rail of them down the left: one picked shows
   // its models alone, so a long list is one click away rather than a
   // scroll down past the others (蓝猫 on Discord); a search looks in all
@@ -3869,7 +3903,9 @@ function launchButton(a) {
   const b = el("button", "field extra launch");
   b.type = "button";
   b.append(svg(LAUNCH_GLYPH, 13, 1.5));
-  b.title = t("{name} takes magpie only from its environment · click to copy the command that starts it:", { name: a.name }) + "\n" + a.launch;
+  b.title = (a.typed
+    ? t("Type {command} in a new terminal to start {name} on magpie · click to copy the command for a terminal open now:", { command: a.typed, name: a.name })
+    : t("{name} takes magpie only from its environment · click to copy the command that starts it:", { name: a.name })) + "\n" + a.launch;
   b.setAttribute("aria-label", b.title);
   b.onclick = (ev) => {
     ev.stopPropagation();
@@ -15509,8 +15545,12 @@ function renderQuotas(lazy) {
       // what was left over time, against an even burn (#651)
       const curve = !brief && !sub.error && quotaCurve(sub);
       if (curve) card.append(curve);
-      // WorkBuddy's credits, day by day, as magpie counted them (#568)
-      if (!brief && !history && sub.daily && !sub.error) card.append(creditDays(sub));
+      // the account's credits, day by day, as magpie counted them (#568):
+      // each pool on its own, named when there are several (#3321)
+      if (!brief && !history && sub.daily && !sub.error) {
+        const pools = [sub.daily, ...(sub.moreDaily || [])];
+        for (const d of pools) card.append(creditDays(d, pools.length > 1));
+      }
       // what is left besides the windows, under them
       if (!history && sub.balance && sub.windows?.length && !sub.error) card.append(balanceRow(sub, "What is left on the account besides its windows", false));
       // the balance over time, and when it runs out at that pace
@@ -15907,13 +15947,15 @@ async function moveUsage(key, to) {
   }
 }
 
-// creditDays: the credits an account used each day of the period, as
-// magpie counted them from its readings of the vendor's meter, which tells
-// only what the cycle has used so far — a bar a day, and the period's sum;
-// a day before magpie first read it is not known rather than nothing.
-function creditDays(sub) {
+// creditDays: the credits (or money, in its unit's currency) one of an
+// account's windows used each day of the period, as magpie counted them
+// from its readings of the vendor's meter, which tells only what the cycle
+// has used so far — a bar a day, and the period's sum; a day before magpie
+// first read it is not known rather than nothing. named: the window's name
+// beside the head, for a card with several.
+function creditDays(daily, named) {
   const box = el("div", "credit-days");
-  const { since, days } = sub.daily;
+  const { since, days, window: pool, unit } = daily;
   const by = new Map(days.map((d) => [d.day, d.used]));
   const key = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   const today = new Date();
@@ -15931,11 +15973,11 @@ function creditDays(sub) {
     d.setDate(d.getDate() - i);
     list.push({ day: key(d), date: d, used: by.get(key(d)) || 0, known: key(d) >= since });
   }
-  const num = (v) => (Math.round(v * 100) / 100).toLocaleString(intlLang());
+  const num = (v) => { try { if (unit) return new Intl.NumberFormat(intlLang(), { style: "currency", currency: unit.toUpperCase() }).format(v); } catch {} return (Math.round(v * 100) / 100).toLocaleString(intlLang()); };
   const dayName = (d) => d.toLocaleDateString(intlLang(), { month: "short", day: "numeric" });
   const sum = list.reduce((a, d) => a + d.used, 0);
   const head = el("div", "cd-head");
-  const name = el("span", "", t("Credits used per day"));
+  const name = el("span", "", t(unit ? "Spent per day" : "Credits used per day") + (named && pool ? " · " + t(pool) : ""));
   name.title = t("Counted from magpie's readings of the vendor's meter, since {date}: what is used while magpie isn't reading it is counted on the day it next does", { date: dayName(new Date(since + "T12:00:00")) });
   head.append(name, el("b", "", n > 1 ? t("{n} in {days} days", { n: num(sum), days: n }) : range && range.to !== key(today) ? t("{n} on {date}", { n: num(sum), date: dayName(last) }) : t("{n} today", { n: num(sum) })));
   box.append(head);
@@ -15947,7 +15989,7 @@ function creditDays(sub) {
       const fill = el("i");
       fill.style.height = d.known && peak ? Math.max(d.used ? 6 : 0, 100 * d.used / peak).toFixed(1) + "%" : "0%";
       b.append(fill);
-      b.title = d.known ? t("{date}: {n} credits", { date: dayName(d.date), n: num(d.used) }) : t("{date}: not counted — magpie began counting on {since}", { date: dayName(d.date), since: dayName(new Date(since + "T12:00:00")) });
+      b.title = d.known ? t(unit ? "{date}: {n} spent" : "{date}: {n} credits", { date: dayName(d.date), n: num(d.used) }) : t("{date}: not counted — magpie began counting on {since}", { date: dayName(d.date), since: dayName(new Date(since + "T12:00:00")) });
       bars.append(b);
     }
     box.append(bars);
@@ -19243,7 +19285,7 @@ function renderCLI(r) {
   const paint = (v) => {
     sub.textContent = v.stuck === "translocated" ? t("macOS runs magpie from a temporary copy until it is moved to Applications: move it there first")
       : v.stuck === "read-only" ? t("magpie runs from its disk image: copy it to Applications first")
-      : v.ours ? t("In a new terminal, magpie runs this app: {path}", { path: v.command }) + (v.shim && v.command === v.shim ? " (" + t("which runs {name}", { name: exeName(v.exe) }) + ")" : "")
+      : v.ours ? t("In a new terminal, magpie runs this app: {path}", { path: v.command }) + (/\.(cmd|com)$/i.test(v.command || "") ? " (" + t("which runs {name}", { name: exeName(v.exe) }) + ")" : "")
       : v.command ? t("In a new terminal, magpie runs another copy: {path}", { path: v.command }) + (v.version ? " (" + v.version + ")" : "")
       : t("A new terminal can't find the magpie command");
     add.hidden = v.ours || !v.dir || !!v.stuck;
@@ -22414,6 +22456,11 @@ function renderPort(s) {
         const n = res.port?.moved?.length || 0;
         if (res.port?.error) status(res.port.error, "err");
         else status(n ? t("Gateway on port {p}; {n} agents moved with it", { p, n }) : t("Gateway on port {p}", { p }), "ok", 2500);
+        // the sidebar's gateway line, and the list's address the pages
+        // copy, say where it is now, not the port before (noahhrreion on
+        // Discord: it kept the old one until Providers was opened)
+        if (res.settings?.gateway) renderSideGw({ ...sideGwAt, url: res.settings.gateway, running: true });
+        if (providers) loadProviders().catch(() => {});
         renderSettings();
       })
       .catch((e) => { d.value = field.value; d.err = portSays(e.message); status(d.err, "err"); renderSettings(); });

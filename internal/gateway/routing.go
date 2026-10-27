@@ -1127,6 +1127,11 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	if why == failQuota && clineModelLimited(c, body) {
 		id = c.restID()
 	}
+	// a ZCode Start Plan trial entry ended or spent is that entry's: the
+	// account's GLM Coding Plan models still answer (#3661)
+	if why == failQuota && zcodeTrialRefused(c, status, body) {
+		id = c.restID()
+	}
 	// out of credit, or of a quota, on a model that costs credits where
 	// the subscription serves other models free is that model's: the free
 	// ones draw on no credits, and the account still serves them (Creat.wu
@@ -1483,6 +1488,7 @@ type left struct {
 	// (Allowance.Fullest), zero when not known
 	fullest time.Time
 	soon    []time.Time // renews as Smart ranks them (Allowance.Renewal)
+	lapse   time.Time   // when the soonest of what is left is lost (Allowance.Lapse)
 	pace    float64     // weekly pace: share of its week left per hour until it renews
 	due     time.Time   // when the window that pace went by renews; zero when not known
 	// restarts: when an auto-used reset starts its windows again
@@ -1568,7 +1574,7 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 			pc, due := a.Pace(c.model, now)
 			amt, of, unit := a.Count(c.model, now)
 			rs := a.Restarts(now)
-			wg.lefts[c.allowanceKey()] = left{used: u, renews: r, fullest: a.Fullest(c.model, now), soon: a.Renewal(c.model, now), pace: pc, due: due, amount: amt, of: of, unit: unit,
+			wg.lefts[c.allowanceKey()] = left{used: u, renews: r, fullest: a.Fullest(c.model, now), soon: a.Renewal(c.model, now), lapse: a.Lapse(c.model, now), pace: pc, due: due, amount: amt, of: of, unit: unit,
 				restarts: rs, dueRestart: !rs.IsZero() && due.Equal(rs), credits: spendsCredits(c.p, a)} // one not known counts as unused
 		}
 	}
@@ -1590,7 +1596,7 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 			pace = provider.FreshPace
 		}
 		seats[i] = routes.Seat{Key: c.rest, Account: c.p.Account != nil, Known: known, Learns: learns(c, wg.lefts),
-			Used: l.used, Soon: l.soon, Pace: pace, Weight: keyWeight(c), Resting: resting(c), Tokens: routed.used[c.restKey()].now(now), Credits: l.credits}
+			Used: l.used, Soon: l.soon, Lapse: l.lapse, Pace: pace, Weight: keyWeight(c), Resting: resting(c), Tokens: routed.used[c.restKey()].now(now), Credits: l.credits}
 	}
 	routed.Unlock()
 	if st.ByUse {

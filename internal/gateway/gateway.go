@@ -648,6 +648,8 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	// and fetches the partner list every hour, asked for or not
 	go provider.KeepPartnersFresh(ctx)
 	go provider.KeepPluginsListed(ctx) // models a plugin's vendor drops or adds, while magpie runs
+	// and those a signed-in account's vendor adds (a ChatGPT plan's new GPT)
+	go provider.KeepAccountsListed(ctx)
 	// and fetches the lists of the providers the user asked to keep fresh (#2135)
 	go provider.KeepListsFresh(ctx)
 	// and keeps the community's plugins up to date, noting others' updates, and the Bun they run on
@@ -1816,7 +1818,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		// that same name, went on unresolved, a 404 (Adam on Discord)
 		asked = grouped(at(m))
 	}
-	if m := s.codexMemoryStandIn(r, call.Agent, agent, call.Kind, asked); m != "" {
+	if m := s.codexMemoryStandIn(r, call.Agent, agent, call.Kind, asked, body); m != "" {
 		asked = m
 	}
 	// a Codex subagent on the model set for Codex's subagents, whatever
@@ -3788,6 +3790,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		t.FirstReasoning, t.ReasoningHidden = call.FirstReasoning, call.ReasoningHidden
 		t.Output, t.Reasoning, t.TTFT, t.FirstText, t.Flow = call.Usage.Output, call.Usage.Reasoning, call.TTFT, call.FirstText, call.Flow
 		t.Sent, t.Own, t.Retried, t.Queued = sentMs, ownMs, retriedMs, queuedMs
+		t.Masking = maskingMs(r.Context(), ownMs)
 		if prompt != nil {
 			t.Prompt = prompt.calibrated(promptCounted(t.Usage), window)
 		}
@@ -3807,7 +3810,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			Input: call.Usage.billed().Input, Output: call.Usage.billed().Output, CacheRead: call.Usage.billed().CacheRead,
 			CacheWrite: call.Usage.billed().CacheWrite, CacheWrite1h: call.Usage.billed().CacheWrite1h, CacheUnknown: call.Usage.billed().cacheNotCounted(), Reasoning: call.Usage.billed().Reasoning, Credits: call.Usage.Credits, Effort: wentAt, Millis: call.Millis, Status: call.Status,
 			TierAsked: tierAsked, TierSent: wentTier, TierServed: call.Usage.Tier,
-			TTFT: call.TTFT, FirstText: call.FirstText, FirstReasoning: call.FirstReasoning, ReasoningHidden: call.ReasoningHidden, Flow: call.Flow, Sent: sentMs, Own: ownMs, Retried: retriedMs, Queued: queuedMs, Session: sessionOf(r.Header), NativeSession: nativeSessionOf(r.Header), Kind: call.Kind,
+			TTFT: call.TTFT, FirstText: call.FirstText, FirstReasoning: call.FirstReasoning, ReasoningHidden: call.ReasoningHidden, Flow: call.Flow, Sent: sentMs, Own: ownMs, Masking: maskingMs(r.Context(), ownMs), Retried: retriedMs, Queued: queuedMs, Session: sessionOf(r.Header), NativeSession: nativeSessionOf(r.Header), Kind: call.Kind,
 			RequestID: call.Usage.RequestID, ResponseID: call.Usage.ResponseID, Endpoint: endpointOf(r, from, call.To, lastTried, model), Stop: call.Usage.Stop, Archive: call.archiveName()}
 		if tries > 1 {
 			// answered, or not, after a try that failed first: the ledger
@@ -4123,6 +4126,10 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 	body = kimiLockedSampling(p, to, body)
 	body = clinePin(p, to, body)
 	body = codexImagesFit(p, to, body)
+	if to == provider.Responses {
+		// whatever the route, Claude's blocks never reach a Responses API
+		body = withoutClaudeSeals(body)
+	}
 	if to == provider.Responses && !keepsAccessPrograms(p, in) {
 		// Codex's Cyber program, relayed or built, goes to OpenAI alone
 		// (#3172); before the user's own fields, which may name one
@@ -4402,6 +4409,11 @@ func codexClientHeader(k string) bool {
 func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.Provider, proto provider.Protocol, model string, body []byte, u *Usage) (status int, msg string, done bool) {
 	upstream := provider.UpstreamNameIn(wiresOf(r.Context()), p.ID, model)
 	body = rewriteModel(body, upstream)
+	if proto == provider.Responses {
+		// Claude's blocks magpie gave a Responses client go back to Claude
+		// alone; to this API the item is its summary, as before
+		body = withoutClaudeSeals(body)
+	}
 	// a client that asked for one body, of an account that only streams:
 	// asked streamed, the stream read here (gathered)
 	var gather *gathered
