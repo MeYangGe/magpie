@@ -2950,6 +2950,27 @@ function dragAgent(e, handle, row) {
     });
 }
 
+// dragScroll: the box a drag in list scrolls, where it was, and how fast a
+// pointer at y scrolls it (near its top or foot)
+function dragScroll(list) {
+  let scroll = list.parentElement;
+  while (scroll && !/(auto|scroll)/.test(getComputedStyle(scroll).overflowY)) scroll = scroll.parentElement;
+  scroll ||= document.scrollingElement;
+  const bounds = scroll.getBoundingClientRect(), edge = 36;
+  return { scroll, scroll0: scroll.scrollTop, speedAt: (y) => y < bounds.top + edge ? -Math.min(1, (bounds.top + edge - y) / edge)
+    : y > bounds.bottom - edge ? Math.min(1, (y - bounds.bottom + edge) / edge) : 0 };
+}
+// dragListen: a drag's listeners (letting go saves, Escape, a lost capture,
+// blur or resize cancels), and what takes them off
+function dragListen(handle, move, finish) {
+  const cancel = (ev) => finish(false, ev);
+  const on = [[document, "pointermove", move, { passive: false }], [document, "pointerup", (ev) => finish(true, ev)],
+    [document, "pointercancel", cancel], [handle, "lostpointercapture", cancel], [window, "blur", cancel], [window, "resize", cancel],
+    [document, "keydown", (ev) => { if (ev.key === "Escape") { ev.preventDefault(); ev.stopImmediatePropagation(); finish(false); } }, true]];
+  for (const [t, n, f, o] of on) t.addEventListener(n, f, o);
+  return () => { for (const [t, n, f, o] of on) t.removeEventListener(n, f, o); };
+}
+
 // Shared pointer sorter. Measure once, move only transforms on animation frames,
 // and commit once on release. No DOM rebuilds or network calls during a drag.
 // The same primitive serves agent handles and handle-free account rows.
@@ -2959,10 +2980,7 @@ function dragRows(e, handle, row, list, rows, commit, start = () => {}, idle = (
   if (from < 0) return false;
   const rects = rows.map((r) => r.getBoundingClientRect());
   const tops = rects.map((r) => r.top), heights = rects.map((r) => r.height), h = heights[from];
-  let scroll = list.parentElement;
-  while (scroll && !/(auto|scroll)/.test(getComputedStyle(scroll).overflowY)) scroll = scroll.parentElement;
-  scroll ||= document.scrollingElement;
-  const bounds = scroll.getBoundingClientRect(), scroll0 = scroll.scrollTop;
+  const { scroll, scroll0, speedAt } = dragScroll(list);
   let dragging = false, ended = false, to = from, y = e.clientY, frame = 0, lastTime = 0;
   const y0 = y, pointer = e.pointerId;
   const paint = (time) => {
@@ -2971,9 +2989,7 @@ function dragRows(e, handle, row, list, rows, commit, start = () => {}, idle = (
     if (!dragging) return;
     const dt = Math.min(32, lastTime ? time - lastTime : 16);
     lastTime = time;
-    const edge = 36;
-    const speed = y < bounds.top + edge ? -Math.min(1, (bounds.top + edge - y) / edge)
-      : y > bounds.bottom - edge ? Math.min(1, (y - bounds.bottom + edge) / edge) : 0;
+    const speed = speedAt(y);
     if (speed) scroll.scrollTop += speed * dt * .6;
     const dy = y - y0 + scroll.scrollTop - scroll0;
     const lo = tops[0] - tops[from], hi = tops.at(-1) + heights.at(-1) - h - tops[from];
@@ -3022,13 +3038,7 @@ function dragRows(e, handle, row, list, rows, commit, start = () => {}, idle = (
     if (ended) return;
     ended = true;
     cancelAnimationFrame(frame);
-    document.removeEventListener("pointermove", move);
-    document.removeEventListener("pointerup", up);
-    document.removeEventListener("pointercancel", cancel);
-    document.removeEventListener("keydown", keys, true);
-    handle.removeEventListener("lostpointercapture", cancel);
-    removeEventListener("blur", cancel);
-    removeEventListener("resize", cancel);
+    off();
     if (handle.hasPointerCapture(pointer)) handle.releasePointerCapture(pointer);
     list.classList.remove("sorting");
     row.classList.remove("dragging");
@@ -3038,16 +3048,7 @@ function dragRows(e, handle, row, list, rows, commit, start = () => {}, idle = (
     // The click dispatched after pointerup must not rename, toggle or remove.
     setTimeout(() => delete handle.dataset.dragged, 0);
   };
-  const up = (ev) => finish(true, ev);
-  const cancel = (ev) => finish(false, ev);
-  const keys = (ev) => { if (ev.key === "Escape") { ev.preventDefault(); ev.stopImmediatePropagation(); finish(false); } };
-  document.addEventListener("pointermove", move, { passive: false });
-  document.addEventListener("pointerup", up);
-  document.addEventListener("pointercancel", cancel);
-  document.addEventListener("keydown", keys, true);
-  handle.addEventListener("lostpointercapture", cancel);
-  addEventListener("blur", cancel);
-  addEventListener("resize", cancel);
+  const off = dragListen(handle, move, finish);
   return true;
 }
 
@@ -3059,10 +3060,7 @@ function dragCards(e, handle, card, list, cards, commit, idle = () => {}) {
   const from = cards.indexOf(card);
   if (from < 0) return false;
   const rects = cards.map((c) => c.getBoundingClientRect());
-  let scroll = list.parentElement;
-  while (scroll && !/(auto|scroll)/.test(getComputedStyle(scroll).overflowY)) scroll = scroll.parentElement;
-  scroll ||= document.scrollingElement;
-  const bounds = scroll.getBoundingClientRect(), scroll0 = scroll.scrollTop;
+  const { scroll, scroll0, speedAt } = dragScroll(list);
   let dragging = false, ended = false, to = from, x = e.clientX, y = e.clientY, frame = 0, lastTime = 0;
   const x0 = x, y0 = y, pointer = e.pointerId;
   const r0 = rects[from];
@@ -3072,9 +3070,7 @@ function dragCards(e, handle, card, list, cards, commit, idle = () => {}) {
     if (!dragging) return;
     const dt = Math.min(32, lastTime ? time - lastTime : 16);
     lastTime = time;
-    const edge = 36;
-    const speed = y < bounds.top + edge ? -Math.min(1, (bounds.top + edge - y) / edge)
-      : y > bounds.bottom - edge ? Math.min(1, (y - bounds.bottom + edge) / edge) : 0;
+    const speed = speedAt(y);
     if (speed) scroll.scrollTop += speed * dt * .6;
     const dx = x - x0, dy = y - y0 + scroll.scrollTop - scroll0;
     card.style.transform = `translate(${dx}px, ${dy}px)`;
@@ -3119,13 +3115,7 @@ function dragCards(e, handle, card, list, cards, commit, idle = () => {}) {
     if (ended) return;
     ended = true;
     cancelAnimationFrame(frame);
-    document.removeEventListener("pointermove", move);
-    document.removeEventListener("pointerup", up);
-    document.removeEventListener("pointercancel", cancel);
-    document.removeEventListener("keydown", keys, true);
-    handle.removeEventListener("lostpointercapture", cancel);
-    removeEventListener("blur", cancel);
-    removeEventListener("resize", cancel);
+    off();
     if (handle.hasPointerCapture(pointer)) handle.releasePointerCapture(pointer);
     list.classList.remove("sorting");
     card.classList.remove("dragging");
@@ -3134,16 +3124,7 @@ function dragCards(e, handle, card, list, cards, commit, idle = () => {}) {
     idle();
     setTimeout(() => delete handle.dataset.dragged, 0);
   };
-  const up = (ev) => finish(true, ev);
-  const cancel = (ev) => finish(false, ev);
-  const keys = (ev) => { if (ev.key === "Escape") { ev.preventDefault(); ev.stopImmediatePropagation(); finish(false); } };
-  document.addEventListener("pointermove", move, { passive: false });
-  document.addEventListener("pointerup", up);
-  document.addEventListener("pointercancel", cancel);
-  document.addEventListener("keydown", keys, true);
-  handle.addEventListener("lostpointercapture", cancel);
-  addEventListener("blur", cancel);
-  addEventListener("resize", cancel);
+  const off = dragListen(handle, move, finish);
   return true;
 }
 
@@ -6128,14 +6109,7 @@ function renderProviders() {
   const onList = $("#providers"), offList = $("#offProviders");
   onList.replaceChildren();
   offList.replaceChildren();
-  const offs = providers.providers.filter((p) => p.off).length;
-  onList.hidden = offs === providers.providers.length;
-  $("#offHead").hidden = !offs;
-  offList.hidden = !offs || offFolded;
-  const fold = $("#foldOff");
-  fold.setAttribute("aria-expanded", String(!offFolded));
-  fold.title = t(offFolded ? "Show the providers turned off" : "Fold the providers turned off away");
-  $("#offCount").textContent = offs ? String(offs) : "";
+  $("#foldOff").title = t(offFolded ? "Show the providers turned off" : "Fold the providers turned off away");
   let dialog = null; // the editor, if one is open
   for (const p of providers.providers) {
     const list = p.off ? offList : onList;
@@ -6302,18 +6276,20 @@ function openProviderMenu(anchor, p) {
 // Providers' search (#1614, ququdu: "供应商很多，然后经常需要翻找"): the
 // words typed keep the rows that say them all, on and off alike, matched on
 // the row's own text and on what it doesn't show: its id, preset, addresses,
-// every model's id and name, each account's user and plan, and the keys'
-// names. The ones turned off show unfolded while searching. Escape or
-// clearing the box brings back every row, the fold as it was.
+// each account's user and plan, and the keys' names. The words it doesn't
+// say are one model's it serves, separators aside ("opus 5.5" finds
+// claude-opus-5-5), named under the row (frankdeng, Neo). The ones turned
+// off show unfolded while searching. Escape or clearing the box brings back
+// every row, the fold as it was.
 let pvQuery = "";
 function providerText(p, row) {
   const a = p.account;
   return [row.textContent, p.id, p.name, p.preset, p.host, p.chat, p.responses, p.anthropic, p.gemini,
-    ...(p.models || []).flatMap((m) => [m.id, m.name]),
     a?.user, a?.agentName, a?.plan, ...(a?.logins || []).flatMap((l) => [l.user, l.plan]),
     ...Object.values(p.accountNames || {}), ...(p.keyList || []).map((k) => k.name),
   ].filter(Boolean).join(" ").toLowerCase();
 }
+const pvSq = (s) => (s || "").toLowerCase().replace(/[\s._-]+/g, "");
 function findProviders() {
   const view = $("#view-providers"), q = $("#pvQ"), none = $("#pvNone");
   q.setAttribute("aria-label", t("Find a provider"));
@@ -6323,26 +6299,22 @@ function findProviders() {
   let on = 0, off = 0;
   for (const row of view.querySelectorAll("#providers > .row.provider, #offProviders > .row.provider")) {
     const p = byId.get(row.dataset.id);
-    const hit = !p || words.every((w) => providerText(p, row).includes(w));
+    row.querySelector(".pv-hits")?.remove();
+    const own = p ? providerText(p, row) : "", rest = words.filter((w) => !own.includes(w));
+    const hits = rest.length ? (p?.models || []).filter((m) => m.on && rest.every((w) => (pvSq(m.id) + "|" + pvSq(m.name)).includes(pvSq(w)))).map((m) => m.id) : [];
+    const hit = !p || !rest.length || hits.length;
+    if (hits.length) row.querySelector(".who").append(el("div", "sub pv-hits", t("Serves {models}", { models: hits.join(", ") })));
     row.hidden = !hit;
     if (hit) p?.off ? off++ : on++;
   }
-  const offs = providers.providers.filter((p) => p.off).length;
   // while searching, the ones off that match show, whatever the fold says
-  const fold = $("#foldOff");
+  const fold = $("#foldOff"), offs = pvQuery ? off : providers.providers.filter((p) => p.off).length;
   fold.disabled = !!pvQuery;
   fold.setAttribute("aria-expanded", String(!!pvQuery || !offFolded));
-  if (pvQuery) {
-    $("#providers").hidden = !on;
-    $("#offHead").hidden = !off;
-    $("#offProviders").hidden = !off;
-    $("#offCount").textContent = off ? String(off) : "";
-  } else {
-    $("#providers").hidden = offs === providers.providers.length;
-    $("#offHead").hidden = !offs;
-    $("#offProviders").hidden = !offs || offFolded;
-    $("#offCount").textContent = offs ? String(offs) : "";
-  }
+  $("#providers").hidden = pvQuery ? !on : offs === providers.providers.length;
+  $("#offHead").hidden = !offs;
+  $("#offProviders").hidden = !offs || !pvQuery && offFolded;
+  $("#offCount").textContent = offs || "";
   none.hidden = !pvQuery || on + off > 0;
   none.textContent = none.hidden ? "" : t("No provider matches “{q}”", { q: q.value.trim() });
 }
@@ -12909,6 +12881,13 @@ function renderAccounts(a, p) {
   for (const l of ls) {
     const on = !unusable(l) && !l.paused && (l.active || l.on);
     const row = el("div", "acc" + (on ? " in-use" : " off") + (l.user === justAdded ? " new" : ""));
+    // its Remove, titled as given; true: the own account's, else the plain one
+    const forgetOf = (title) => {
+      const f = el("button", "text quiet", t("Remove"));
+      if (title) f.title = title !== true ? title : l.own ? forgetOwnTitle(a) : t("magpie forgets this account's sign-in; the account itself is untouched");
+      f.onclick = () => accountAction("login/forget", { agent: a.agent, user: l.user }, t("{user} removed", { user: l.user }));
+      return f;
+    };
     row.dataset.accountId = l.user;
     const dot = el("button", "dot tick");
     if (on) dot.append(svg(CHECK, 10, 2.2));
@@ -12952,19 +12931,14 @@ function renderAccounts(a, p) {
       row.append(again);
       // the one Claude Code is signed in to can't be forgotten (ForgetLogin)
       if (!l.active) {
-        const forget = el("button", "text quiet", t("Remove"));
-        forget.onclick = () => accountAction("login/forget", { agent: a.agent, user: l.user }, t("{user} removed", { user: l.user }));
-        row.append(forget);
+        row.append(forgetOf());
       }
     } else if (signedOut(l)) {
       row.classList.add("signed-out");
       row.append(el("span", "using", t("Sign-in required")));
       const again = el("button", "text", t("Sign in again"));
       again.onclick = () => startSignIn(a.agent, false, againSite(l), { user: l.user });
-      const forget = el("button", "text quiet", t("Remove"));
-      forget.title = l.own ? forgetOwnTitle(a) : t("magpie forgets this account's sign-in; the account itself is untouched");
-      forget.onclick = () => accountAction("login/forget", { agent: a.agent, user: l.user }, t("{user} removed", { user: l.user }));
-      row.append(again, forget);
+      row.append(again, forgetOf(true));
     } else if (l.active && kept && l.user !== firstUser) {
       // signed in to, kept so, and tried at its place in the order
       const signed = el("span", "using", l.paused ? t("Paused") : t("Signed in"));
@@ -12976,10 +12950,7 @@ function renderAccounts(a, p) {
       if (back && !l.paused) using.title = t("{user} was nearly used up, so magpie signed {agent} in to this one; it goes back to {user} once that has room again", { user: back.user, agent: a.agentName });
       row.append(using);
       if (a.agent === "qoder" || a.agent === "qoder-cn" || l.own) {
-        const forget = el("button", "text quiet", t("Remove"));
-        if (l.own) forget.title = forgetOwnTitle(a);
-        forget.onclick = () => accountAction("login/forget", { agent: a.agent, user: l.user }, t("{user} removed", { user: l.user }));
-        row.append(forget);
+        row.append(forgetOf(l.own));
       } else if (a.agent === "codex" && ls.length === 1) {
         // Codex's only account: no other to sign it in to first, so it is
         // signed out, as codex logout does (ForgetLogin)
@@ -12990,15 +12961,10 @@ function renderAccounts(a, p) {
       } else if (a.agent === "codex") {
         // Codex is signed in to another of its accounts first, then this
         // one goes (ForgetLogin), rather than Codex signed out
-        const forget = el("button", "text quiet", t("Remove"));
-        forget.title = t("Codex is signed in to another of its accounts, and magpie forgets this one; the account itself is untouched");
-        forget.onclick = () => accountAction("login/forget", { agent: a.agent, user: l.user }, t("{user} removed", { user: l.user }));
-        row.append(forget);
+        row.append(forgetOf(t("Codex is signed in to another of its accounts, and magpie forgets this one; the account itself is untouched")));
       }
     } else {
-      const forget = el("button", "text quiet", t("Remove"));
-      forget.title = l.own ? forgetOwnTitle(a) : t("magpie forgets this account's sign-in; the account itself is untouched");
-      forget.onclick = () => accountAction("login/forget", { agent: a.agent, user: l.user }, t("{user} removed", { user: l.user }));
+      const forget = forgetOf(true);
       if (l === back) {
         const again = el("span", "using", t("First again once it has room"));
         again.title = t("magpie signs {agent} back in to this account once it has room again", { agent: a.agentName });
@@ -13079,24 +13045,30 @@ function renderAccounts(a, p) {
     box.append(only);
     list.append(box);
   }
+  // how a pool ends at its caps (plugins#349)
+  const capped = (l) => accountCapOf(p, l.user) || windowCapsOf(p, l.user);
+  if (p && (ls.some(capped) || p.capStop || p.capCareful)) {
+    const box = el("div", "pool-ends");
+    for (const [k, say, tip] of [["capStop", "Stop when every account is at its cap", "On: once every account in use is at its cap, requests get 429 instead of going to the fallbacks."],
+      ["capCareful", "Check usage again near a cap", "On: an account within 5 points of its cap has its usage read again if older than 15s (any account: 5m) before a request, waiting up to 10s; one whose usage can't be read is held."]]) {
+      const [l, c] = tick(t(say), !!p[k]);
+      l.title = t(tip);
+      c.onchange = () => accountAction("provider/" + k.toLowerCase(), { id: p.id, [k]: c.checked }, t("Saved"));
+      box.append(l);
+    }
+    const open = ls.filter((l) => !unusable(l) && !l.paused && (l.active || l.on) && !capped(l)).map((l) => l.user);
+    if (open.length) box.append(el("span", "note", t("No cap on {users}: used to 100% of each window", { users: open.join(", ") })));
+    list.append(box);
+  }
   const pv = a.agent === "codex" ? providers || {} : {};
   if (pv.codexDaemon) list.append(renderCodexDaemon(pv.codexDaemon));
   if (pv.codexApp) list.append(renderCodexApp(pv.codexApp));
   if (signing?.agent === a.agent) list.append(renderSigning(sub));
   else {
-    const add = el("button", "acc add");
-    const ic = el("span", "dot");
-    ic.append(svg(PLUS, 10, 1.8));
-    add.append(ic, el("span", "n", t(sub.single && sub.plugin ? "Sign in again" : sub.single ? "Sign in to another {name} account" : "Add another {name} account", { name: sub.name })));
-    add.onclick = () => startSignIn(a.agent);
-    list.append(add);
+    list.append(addRow(t(sub.single && sub.plugin ? "Sign in again" : sub.single ? "Sign in to another {name} account" : "Add another {name} account", { name: sub.name }), () => startSignIn(a.agent)));
     if (sub.importable) {
-      const imp = el("button", "acc add");
-      const ic2 = el("span", "dot");
-      ic2.append(svg(PLUS, 10, 1.8));
-      imp.append(ic2, el("span", "n", importSay(a.agent).row || t("Import accounts from a file…")));
+      const imp = addRow(importSay(a.agent).row || t("Import accounts from a file…"), () => startImport(a.agent));
       imp.title = importSay(a.agent).from;
-      imp.onclick = () => startImport(a.agent);
       list.append(imp);
     }
   }
@@ -13593,6 +13565,14 @@ function accountNameButton(p, user) {
   wrap.append(hideAccounts.eye(user));
   return wrap;
 }
+// an account or key list's last row, adding one
+function addRow(say, go) {
+  const b = el("button", "acc add"), ic = el("span", "dot");
+  ic.append(svg(PLUS, 10, 1.8));
+  b.append(ic, el("span", "n", say));
+  b.onclick = go;
+  return b;
+}
 function accountCapOf(p, user) { return p?.accountCaps?.[String(user).toLowerCase()] || 0; }
 // A window's own cap (provider.AccountWindowCaps, willz on Discord): a
 // friend's account stops at 50% of its five hours while its week may go to
@@ -13878,16 +13858,14 @@ async function refreshLanes() {
   for (const pill of document.querySelectorAll(".alane")) laneText(pill);
 }
 
-// A window reads as how much of it is used, or — as the vendors' own apps
-// show it — how much is left, the bar filling with that; one choice for
-// every meter and the menu bar, kept in the settings (#122). The vendor's
-// own count, where it gives one, stands before the percentage.
+// A window reads as used or, as the vendors' apps show it, left, the bar
+// filling with that: one setting for every meter and the menu bar (#122).
+// The vendor's count, if any, stands before the percentage.
 let quotaLeft = false;
 function to100(v) { return Math.max(0, Math.min(100, v)); }
-// quotaNoShare: the plugin didn't say how much of the window is used. Its
-// text is all there is, and no percentage may be read from it: 0 is a
-// reading, absent is not (#3650)
-function quotaNoShare(w) { return !!w.text || w.used == null; }
+// quotaNoShare: no share was said (0 is one, absent is not, #3650), or the
+// window is a wallet's balance (#3950): its text or figure is all there is
+function quotaNoShare(w) { return !!w.text || w.used == null || w.balance != null; }
 function tipLines(...a) { return a.filter(Boolean).join("\n"); }
 function quotaFill(w) {
   if (w.used == null) return 0;
@@ -13896,6 +13874,7 @@ function quotaFill(w) {
 }
 function quotaText(w) {
   if (w.unlimited) return t("Unlimited");
+  if (w.balance != null) return t("{n} left", { n: (countFormat.format(w.balance) + " " + t(w.unit || "")).trim() });
   if (quotaNoShare(w)) return w.display || t("No allowance reported");
   const used = to100(w.used);
   const n = quotaLeft ? 100 - used : used;
@@ -13933,9 +13912,8 @@ function paceLine(w) {
     : t("Right on an even pace through this window");
   return span;
 }
-// quotaCount: a window's own count, when its vendor counts in amounts
-// (WorkBuddy's credits, #659) — "355 / 500 credits" used, or what is left
-// of them, as the share beside it says; the vendor's own text otherwise.
+// quotaCount: a window's own count in amounts (WorkBuddy's credits, #659),
+// "355 / 500 credits" used or left as the share says; else the vendor's text
 const countFormat = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 });
 function quotaCount(w) {
   if (!(w.limit > 0)) return w.display || "";
@@ -14454,12 +14432,7 @@ function renderKeyAccounts(p) {
     list.append(box);
     queueMicrotask(() => key.focus());
   } else {
-    const add = el("button", "acc add");
-    const ic = el("span", "dot");
-    ic.append(svg(PLUS, 10, 1.8));
-    add.append(ic, el("span", "n", t("Add another key")));
-    add.onclick = () => { addingKey = { id: p.id, name: "", key: "" }; renderProviders(); };
-    list.append(add);
+    list.append(addRow(t("Add another key"), () => { addingKey = { id: p.id, name: "", key: "" }; renderProviders(); }));
   }
   // rows folded away keep their places when the shown ones are dragged
   if (fold.folded) list.accountOrder = p.keyList.map((k) => k.id);
@@ -15554,7 +15527,7 @@ function renderQuotas(lazy) {
     const sum = keys && keysSum(subs);
     if (sum) {
       const s = el("span", "quota-sum", t("{sum} in all", { sum }));
-      s.title = t("The {n} keys' balances added up", { n: subs.length });
+      s.title = keysSumTip(subs);
       head.append(s);
     }
     // many accounts (Linx on X: twenty-odd on one plugin, 顶成擎天柱):
@@ -15830,6 +15803,7 @@ function byUsageOrder(list) {
 // balance's card id goes with it (balanceCard), for a menu bar cell
 // that opens it.
 function keyCards(list) {
+  list = sharedBalances(list);
   const plan = (q) => q.windows?.length && !q.balance && !q.error;
   const bal = (q) => q.balance && !q.windows?.length && !q.plan;
   const merged = new Map(), gone = new Set();
@@ -17925,12 +17899,9 @@ function panelAge() {
 }
 if (mode === "panel") setInterval(panelAge, 30000);
 
-// quotaFit puts every window's count under its name once one's doesn't fit
-// beside it, so windows side by side read alike rather than one count up
-// by its name and the next a line below (#90). Stacked or not changes the
-// windows' own height, so it is decided on the next frame: changed in the
-// observer's own call, the observer is owed that change in the same frame,
-// which WebKit reports as a ResizeObserver loop (account-mask's page error).
+// quotaFit stacks every window's count once one's doesn't fit (#90) and
+// lines up the bars beside each other (#3955), on the next frame: in the
+// observer's call WebKit reports a ResizeObserver loop (account-mask).
 const quotaFitting = new Set();
 const quotaFit = new ResizeObserver((es) => {
   if (!quotaFitting.size) requestAnimationFrame(fitQuotas);
@@ -17949,6 +17920,10 @@ function fitQuota(g) {
     return name.getBoundingClientRect().width + 6 + wide(n) > l.clientWidth;
   });
   g.classList.toggle("stacked", wraps);
+  const ls = g.querySelectorAll(":scope > .quota > .quota-labels"), top = {}, h = (l) => l.getBoundingClientRect().height;
+  for (const l of ls) l.style.minHeight = "";
+  for (const l of ls) top[l.offsetTop] = Math.max(top[l.offsetTop] || 0, h(l));
+  for (const l of ls) if (top[l.offsetTop] > h(l) + 0.5) l.style.minHeight = top[l.offsetTop] + "px";
 }
 
 // balanceRow: what is left on an account, as a figure; a balance field
@@ -18882,6 +18857,7 @@ if (!web) addEventListener("keydown", (e) => {
 let fontList = null, fontListError = false, fontFlight = null, fontRevision = 0;
 const fontDrafts = {};
 function fontChoices(s) {
+  if (web) return { ...s, ...window.desktopFonts.own() };
   return { ...s, ...Object.fromEntries(Object.entries(fontDrafts).map(([k, d]) => [k, d.value])) };
 }
 // The native host notifies both existing webviews after a successful save.
@@ -18895,13 +18871,12 @@ window.receiveFonts = (s) => {
   if (prefs && view === "settings") renderFonts(prefs);
 };
 async function loadFonts(refresh = false) {
-  if (web || fontFlight || (fontList !== null && !refresh)) return fontFlight;
+  if (fontFlight || (fontList !== null && !refresh)) return fontFlight;
   fontListError = false;
   fontFlight = api("fonts" + (refresh ? "?refresh=1" : ""))
     .then((list) => {
       if (!Array.isArray(list)) throw new Error("invalid font collection");
-      fontList = list;
-      window.desktopFonts.catalogue(list);
+      window.desktopFonts.catalogue(fontList = web ? window.desktopFonts.here(list) : list);
       window.desktopFonts.apply(fontChoices(prefs || window.bootPrefs));
     })
     .catch(() => { fontListError = true; })
@@ -18910,6 +18885,7 @@ async function loadFonts(refresh = false) {
   return fontFlight;
 }
 function chooseFont(key, value) {
+  if (web) return window.desktopFonts.keep(key, value), renderFonts(prefs);
   const revision = ++fontRevision;
   fontDrafts[key] = { value, revision };
   window.desktopFonts.apply(fontChoices(prefs));
@@ -18933,8 +18909,7 @@ function renderFonts(s) {
   const current = fontChoices(s);
   for (const [key, id, label] of [["uiFont", "uiFontRow", "Interface font"], ["codeFont", "codeFontRow", "Code font"]]) {
     const row = $("#" + id);
-    row.hidden = web;
-    if (web) continue;
+    row.hidden = false;
     const chosen = current[key], family = fontList?.find((f) => f.name === chosen?.family);
     const missing = chosen && !window.desktopFonts.available(chosen);
     const note = row.querySelector(".font-note");
@@ -19077,7 +19052,7 @@ function renderLoginAllow(s) {
 
 async function loadSettings() {
   const since = prefsWrites;
-  if (!web && fontList === null && !fontListError) loadFonts();
+  if (fontList === null && !fontListError) loadFonts();
   if (window.bootPrefs?.omarchy && !barIcon) api("omarchy/widget").then((b) => { barIcon = b; renderBarIcon(); }).catch(() => {});
   const s = await api("settings");
   if (!prefsSettled(since) && prefs) return; // the save draws the page when it's in
