@@ -8,18 +8,37 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: sync-fork
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      # 调用 GitHub 官方 merge-upstream API（即网页 "Sync fork" 按钮的机制），
-      # 可快进时快进，已分叉时自动合并，不会因为本仓库自身多出的提交而失败
-      - name: Sync from upstream yetone/magpie
+      # GITHUB_TOKEN 是 GitHub App token，没有 workflows 权限；上游只要改动
+      # .github/workflows/ 下的文件，merge-upstream 就会返回 HTTP 422。
+      # 因此这里改用带 Workflows 读写权限的 fine-grained PAT（仓库 secret: SYNC_TOKEN）。
+      - name: Check sync token
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
         run: |
           set -euo pipefail
-          response=$(curl -s -w '\n%{http_code}' -X POST \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+          if [ -z "${SYNC_TOKEN:-}" ]; then
+            echo "::error::缺少 secrets.SYNC_TOKEN：请创建 fine-grained PAT（Contents: Read and write + Workflows: Read and write）并加入仓库 secrets"
+            exit 1
+          fi
+      # 调用 GitHub 官方 merge-upstream API（即网页 "Sync fork" 按钮的机制），
+      # 可快进时快进，已分叉时自动合并，上游 workflow 文件的改动也能一起同步
+      - name: Sync from upstream yetone/magpie
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          response=$(curl -sS -w '\n%{http_code}' -X POST \
+            -H "Authorization: Bearer ${SYNC_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/MeYangGe/magpie/merge-upstream" \
             -d '{"branch":"main"}')
           http_code=$(tail -n 1 <<<"$response")
