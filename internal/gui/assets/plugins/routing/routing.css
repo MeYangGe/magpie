@@ -76,7 +76,9 @@
    it routes to together on a line of its own */
 .rt-accts li.rt-sub { flex-wrap: wrap; row-gap: 4px; cursor: pointer; user-select: none; }
 .rt-accts li.rt-sub .n { white-space: nowrap; }
-.rt-accts li.rt-sub .n:empty, .rt-accts li.rt-sub em:empty { display: none; }
+.rt-accts li.rt-sub .n:empty, .rt-accts li.rt-sub em:empty, .rt-accts li.rt-sub i:empty { display: none; }
+/* a route's heading, when more than one route is on the stage: its provider's logo */
+.rt-accts li.rt-sub > .ic { flex: none; }
 .rt-accts li.rt-sub .chev { display: inline-flex; color: var(--muted); transition: transform .2s; }
 .rt-accts li.rt-sub .chev svg { color: inherit; }
 .rt-accts li.rt-sub:hover .chev { color: var(--fg); }
@@ -435,7 +437,7 @@ button.rt-session { cursor: pointer; }
 .rt-livedot { width: 6px; height: 6px; margin-left: 7px; border-radius: 50%; background: var(--green); --fg: var(--green); }
 /* it pulses while a request is under way only (#2827) */
 .rt-livedot.on { animation: rtlive 1.8s infinite; }
-@media (prefers-reduced-motion: reduce) { .rt-livedot { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .rt-livedot.on { animation: none; } }
 /* routing groups, and the providers routing over several of their own */
 .rt-gsec { display: grid; gap: 6px; margin-top: 16px; }
 .rt-gsec .row-head .note { margin-right: 6px; }
@@ -650,6 +652,9 @@ button.rt-session { cursor: pointer; }
 /* Add a rule, and beside it a rule by what the message asks for */
 .rt-gadds { display: flex; flex-wrap: wrap; gap: 6px; }
 .rt-gadds > [hidden] { display: none; }
+/* Add a model, and beside it Sort by weight while it would move something */
+.rt-madds { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.rt-madds > [hidden] { display: none; }
 /* a group's rules, each one line read as a sentence: the conditions it
    has, → and the model it sends that turn to first; its acts under ⋯ */
 .rt-rules .fbl:not(:empty) + .rt-gadds { margin-top: 2px; }

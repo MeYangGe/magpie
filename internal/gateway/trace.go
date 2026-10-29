@@ -125,6 +125,9 @@ type Route struct {
 	// Masking: the ms of Own that went on masking it (maskingMs)
 	Phase   string `json:"phase,omitempty"`
 	Masking int64  `json:"masking,omitempty"`
+	// Held: the file name, in HeldDir, of the report saved of a request
+	// magpie held too long before routing it and stopped (giveUp)
+	Held string `json:"held,omitempty"`
 	// Served: the model the reply says answered, as the last try has it;
 	// Swapped: another than the one that try asked for; Routed: that try
 	// asked another magpie's routing group, and Served is its member
@@ -216,7 +219,7 @@ func groupRef(g provider.Group, ms []provider.Member) *GroupRef {
 	ref := &GroupRef{ID: g.ID, Ref: g.Ref(), Name: g.Name, Routing: g.Routing, Affinity: g.Affinity, Auto: g.Auto, Sink: sinks(g.Sink, g.Routing)}
 	seen := map[string]bool{}
 	for _, m := range ms {
-		ref.Members = append(ref.Members, provider.WithMemberEffort(m.Provider.ID+"/"+m.Model, m.Effort))
+		ref.Members = append(ref.Members, m.Spelled())
 		if m.Fast {
 			ref.Fast = append(ref.Fast, ref.Members[len(ref.Members)-1])
 		}
