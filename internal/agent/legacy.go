@@ -37,8 +37,18 @@ func RenameLegacy() {
 		}
 		for i := range a.Fields {
 			f := &a.Fields[i]
+			if strings.HasSuffix(f.Key, "effort") {
+				// a thinking level, never a model: Pi's is read against
+				// the models it offers, the whole catalog built at start
+				// up for it (~52 MB with a real account's providers)
+				continue
+			}
 			if rest, ok := strings.CutPrefix(f.Get(), legacyID+"/"); ok {
-				_ = f.Set(magpieID + "/" + rest)
+				// dial/… is what magpie wrote under its old name: magpie set
+				// the agent up (setUp)
+				if f.Set(magpieID+"/"+rest) == nil {
+					record(a.ID, f.Key, f.Get())
+				}
 			}
 		}
 		switch a.ID {
@@ -91,6 +101,10 @@ func moveEfforts(pid string, base func(string) (string, string, bool)) {
 			v := f.Get()
 			pre, rest := "", v
 			if r, ok := strings.CutPrefix(v, magpieID+"/"); ok {
+				if a.handWired() {
+					// the user's own provider named magpie: not ours to move
+					continue
+				}
 				pre, rest = magpieID+"/", r
 			}
 			id, ok := strings.CutPrefix(rest, pid+"/")

@@ -4,12 +4,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"regexp"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/yetone/magpie/internal/access"
-	"github.com/yetone/magpie/internal/provider"
 )
 
 // Every route Handler registers is either a client route `magpie web`'s
@@ -19,35 +19,9 @@ import (
 // /_magpie/. A route added to Handler and to neither fails this, so the
 // one-port page doesn't miss it, or take it, by accident.
 func TestClientPathCoversHandler(t *testing.T) {
-	src, err := os.ReadFile("gateway.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	start := strings.Index(string(src), "func (s *Server) Handler() http.Handler {")
-	end := strings.Index(string(src)[start:], "\n}\n")
-	body := string(src)[start : start+end]
-	consts := map[string]string{
-		"claudeMCPPath": claudeMCPPath, "CodexPath": CodexPath, "CodexCatalogPath": CodexCatalogPath,
-		"AlphaSearchPath": AlphaSearchPath, "HeapPath": HeapPath, "CPUPath": CPUPath,
-		"GoroutinesPath": GoroutinesPath, "ClaudeRunsPath": ClaudeRunsPath, "SearchMCPPath": SearchMCPPath, "VisionMCPPath": VisionMCPPath,
-		"ImageMCPPath": ImageMCPPath, "ImageMCPFiles": ImageMCPFiles,
-		"ToolsMCPPath": ToolsMCPPath, "HubMCPPath": HubMCPPath, "HubMCPAll": HubMCPAll, "provider.RemoteCardsPath": provider.RemoteCardsPath,
-		"provider.RemoteRefreshPath": provider.RemoteRefreshPath,
-	}
-	re := regexp.MustCompile(`mux\.HandleFunc\(((?:"[^"]*"|[A-Za-z.]+)(?:\s*\+\s*(?:"[^"]*"|[A-Za-z.]+))*),`)
+	// the patterns as routes() registers them, not as its source reads
 	n := 0
-	for _, m := range re.FindAllStringSubmatch(body, -1) {
-		pat := ""
-		for _, part := range strings.Split(m[1], "+") {
-			part = strings.TrimSpace(part)
-			if strings.HasPrefix(part, `"`) {
-				pat += strings.Trim(part, `"`)
-			} else if v, ok := consts[part]; ok {
-				pat += v
-			} else {
-				t.Fatalf("Handler names %s, which this test doesn't know: add it to consts", part)
-			}
-		}
+	for _, pat := range New().routes().patterns {
 		if i := strings.IndexByte(pat, ' '); i >= 0 {
 			pat = pat[i+1:]
 		}
@@ -59,7 +33,7 @@ func TestClientPathCoversHandler(t *testing.T) {
 		}
 	}
 	if n < 60 {
-		t.Fatalf("found %d routes in Handler: the pattern no longer reads it", n)
+		t.Fatalf("found %d routes in Handler", n)
 	}
 }
 
@@ -75,6 +49,40 @@ func TestClientPathOnlyClean(t *testing.T) {
 		if !ClientPath(p) {
 			t.Errorf("%q is not a client path", p)
 		}
+	}
+}
+
+// docs/reference.md's LazyCat manifest makes public (public_path) every
+// client route and nothing else. A route it leaves out sends an agent that
+// isn't signed in to the box to the box's login page; one of the page's
+// own made public there lets a browser that isn't signed in reach magpie
+// without being sent to the box's sign-in.
+func TestLazyCatManifestListsTheClientRoutes(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "docs", "reference.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, doc, ok := strings.Cut(string(b), "\n#### LazyCat\n")
+	if !ok {
+		t.Fatal("docs/reference.md has no LazyCat section")
+	}
+	_, list, ok := strings.Cut(doc, "\n  public_path:\n")
+	if !ok {
+		t.Fatal("its manifest has no public_path")
+	}
+	var public []string
+	for _, l := range strings.Split(list, "\n") {
+		p, ok := strings.CutPrefix(strings.TrimSpace(l), "- ")
+		if !ok {
+			break
+		}
+		public = append(public, strings.TrimSuffix(p, "/"))
+	}
+	want := slices.Clone(clientPrefixes)
+	slices.Sort(public)
+	slices.Sort(want)
+	if !slices.Equal(public, want) {
+		t.Fatalf("public_path %v, the client routes %v", public, want)
 	}
 }
 

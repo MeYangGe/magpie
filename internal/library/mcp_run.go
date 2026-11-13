@@ -13,8 +13,11 @@ package library
 // (a browser, a page) is still kept per thread.
 //
 // Codex not on magpie, in WSL, or reaching the gateway with a key of its
-// own (another machine), and a server with a variable magpie hasn't, are
-// given the command as before.
+// own (another machine), a server with a variable magpie hasn't, and one
+// the user keeps direct (Server.Hub), are given the command as before: a
+// direct one reads its project from the folder it starts in, which Codex
+// makes the thread's (codex-mcp's LocalStdioServerLauncher, with no `cwd`
+// in the entry), and magpie's would be home (#4382, cuipengcx90).
 
 import (
 	"bufio"
@@ -65,7 +68,8 @@ func specOf(s *Server) (runSpec, bool) {
 	if len(unset) > 0 {
 		return runSpec{}, false
 	}
-	return runSpec{Command: s.Command, Args: slices.Clone(s.Args), Env: env}, true
+	cmd, args := launchCmd(s, "")
+	return runSpec{Command: cmd, Args: slices.Clone(args), Env: env}, true
 }
 
 var runs struct {
@@ -181,7 +185,7 @@ func runSpecOf(name string) (runSpec, bool) {
 		return runSpec{}, false
 	}
 	s := l.server(name)
-	if s == nil || !slices.Contains(s.Agents, "codex") {
+	if s == nil || !slices.Contains(s.Agents, "codex") || s.Hub == HubDirect {
 		return runSpec{}, false
 	}
 	return specOf(npxDirect(s))
@@ -669,6 +673,11 @@ func ServeRun(w http.ResponseWriter, r *http.Request, name string) {
 		runReply(w, rpcError(m.ID, -32603, err.Error()))
 		return
 	}
+	var events chan []byte
+	if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+		events = s.open()
+		defer s.close(events)
+	}
 	reply := c.wait(m.ID)
 	if err := c.send(line.Bytes()); err != nil {
 		c.unwait(m.ID)
@@ -686,7 +695,7 @@ func ServeRun(w http.ResponseWriter, r *http.Request, name string) {
 			remember(spec, m.Method, r.Result)
 		}
 	}
-	if !strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+	if events == nil {
 		select {
 		case b, ok := <-reply:
 			if !ok {
@@ -700,8 +709,6 @@ func ServeRun(w http.ResponseWriter, r *http.Request, name string) {
 		}
 		return
 	}
-	events := s.open()
-	defer s.close(events)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)

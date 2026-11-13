@@ -36,6 +36,11 @@ type WSLHome struct {
 	Distro  string
 	Home    string
 	Running bool
+	// Open maps a path under Home to where it can be read from Windows:
+	// a folder that is a link in the distro (~/.codex → /mnt/c/…) can't
+	// be followed through \\wsl.localhost (#4502), so what is below it is
+	// read where the link leads. nil reads every path as it is.
+	Open func(string) string
 }
 
 // WSLHomes are the WSL distros to read sessions in; nil (none) unless
@@ -53,6 +58,12 @@ var WSLRunning func(distro string) bool
 // internal/agent. Off, no distro's sessions are listed, not even those
 // listed before.
 var WSLOff func() bool
+
+// WSLListed is whether wsl.exe answered the last list of distros, so that
+// WSLHomes naming none means "no distro has an agent" (the user took the
+// last one away), not "wsl.exe didn't answer"; internal/agent sets it. Nil
+// is not known.
+var WSLListed func() bool
 
 // wslLooking is whether the distros' sessions are listed.
 func wslLooking() bool { return WSLHomes != nil && (WSLOff == nil || !WSLOff()) }
@@ -74,10 +85,13 @@ var wslAgents = []struct{ agent, dir string }{
 }
 
 // wslScan lists the session files under a distro's home.
-func wslScan(home string) []file {
+func wslScan(h WSLHome) []file {
 	var out []file
 	for _, a := range wslAgents {
-		dir := filepath.Join(home, a.dir)
+		dir := filepath.Join(h.Home, a.dir)
+		if h.Open != nil {
+			dir = h.Open(dir)
+		}
 		switch a.agent {
 		case "claude":
 			out = append(out, ccFiles("claude", dir)...)
@@ -198,7 +212,7 @@ func wslFiles(agents ...string) []file {
 		in := &fileMore{wsl: n} // the distro's files share it
 		for _, e := range l.Files {
 			if want[e.Agent] {
-				out = append(out, file{agent: e.Agent, key: e.Key, path: e.Path, main: e.Main, size: e.Size, mod: e.Mod, more: in, cold: cold})
+				out = append(out, file{agent: e.Agent, key: e.Key, path: e.Path, main: e.Main, size: e.Size, mod: modOf(e.Mod), more: in, cold: cold})
 			}
 		}
 	}
@@ -207,7 +221,8 @@ func wslFiles(agents ...string) []file {
 
 // wslList lists the distros' files: a running one's afresh, a stopped
 // one's as they were. With no distros said at all (wsl.exe didn't answer)
-// every listing is kept, cold.
+// every listing is kept, cold. A wsl.exe that answered with no distro an
+// agent is in (WSLListed) lets them all go.
 func wslList(gen uint64, done chan struct{}) {
 	defer close(done)
 	homes := WSLHomes()
@@ -228,12 +243,15 @@ func wslList(gen uint64, done chan struct{}) {
 			continue
 		}
 		l := &wslListing{Home: h.Home, Running: true, Files: []wslEntry{}}
-		for _, f := range wslScan(h.Home) {
-			l.Files = append(l.Files, wslEntry{Agent: f.agent, Key: f.key, Path: f.path, Main: f.main, Size: f.size, Mod: f.mod})
+		for _, f := range wslScan(h) {
+			l.Files = append(l.Files, wslEntry{Agent: f.agent, Key: f.key, Path: f.path, Main: f.main, Size: f.size, Mod: f.mod.Time()})
 		}
 		lists[h.Distro] = l
 	}
-	if len(homes) == 0 {
+	// with no distros said and no answer from wsl.exe every listing is
+	// kept; one that answered and found no agent anywhere has none left to
+	// list, and the rows of files that are gone with them
+	if len(homes) == 0 && (WSLListed == nil || !WSLListed()) {
 		for n, o := range old {
 			c := *o
 			c.Running = false

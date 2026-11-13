@@ -3,6 +3,8 @@ package sessions
 import (
 	"slices"
 	"sync"
+
+	"github.com/yetone/magpie/internal/dirent"
 )
 
 // held is the session folders' listings kept while a request that reads
@@ -20,6 +22,9 @@ var held struct {
 	// listing as its own (#4114)
 	gen   uint64
 	lists map[string]*heldList
+	// mark is dirent's as the latest hold began: its folders are watched
+	// from it, so a poll's first probe vouches for the rest (#2278)
+	mark int
 }
 
 type heldList struct {
@@ -38,6 +43,7 @@ func OneListing() (done func()) {
 	held.Lock()
 	held.n++
 	held.gen++
+	held.mark = dirent.Mark()
 	held.Unlock()
 	return letGo()
 }
@@ -53,6 +59,7 @@ func ShareListing() (done func()) {
 	defer held.Unlock()
 	if held.n++; held.n == 1 {
 		held.gen++
+		held.mark = dirent.Mark()
 	}
 	return letGo()
 }
@@ -67,12 +74,25 @@ func letGo() func() {
 	})
 }
 
+// watch is dirent.Watch of dir, from the latest hold's mark under one.
+func watch(dir string) {
+	held.Lock()
+	n, mark := held.n, held.mark
+	held.Unlock()
+	if n == 0 {
+		dirent.Watch(dir)
+		return
+	}
+	dirent.WatchSince(dir, mark)
+}
+
 // heldWaiting is a test's: called as a read waits for another's listing.
 var heldWaiting func()
 
 // heldFiles is list(), or, under a hold, the listing of key taken since
 // the latest hold began. The folders are listed outside the lock, once
-// for the reads that ask meanwhile.
+// for the reads that ask meanwhile. The listing is theirs together: a
+// reader never writes to it, and sorts or filters a copy of its own.
 func heldFiles(key string, list func() []file) []file {
 	held.Lock()
 	if held.n == 0 {
@@ -85,7 +105,7 @@ func heldFiles(key string, list func() []file) []file {
 			heldWaiting()
 		}
 		<-l.ready
-		return slices.Clone(l.files)
+		return l.files
 	}
 	mine := &heldList{gen: held.gen, ready: make(chan struct{})}
 	if held.lists == nil {
@@ -94,8 +114,10 @@ func heldFiles(key string, list func() []file) []file {
 	held.lists[key] = mine
 	held.Unlock()
 	defer close(mine.ready)
-	files := list()
-	// before ready is closed, so whoever waited reads it
-	mine.files = slices.Clone(files)
-	return files
+	// one listing for every read under the hold, not a copy each: ~95 MB
+	// of a minute of polls (#2278). They only read it, and clipped, an
+	// append to it is made elsewhere. Before ready is closed, so whoever
+	// waited reads it.
+	mine.files = slices.Clip(list())
+	return mine.files
 }
