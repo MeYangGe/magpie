@@ -757,13 +757,28 @@ var googleToS = lazyre.New(`(?i)disabled in this account for violation of Terms 
 // refused, every ten minutes for good. Another vendor's same words are its
 // own, and aren't read so.
 func googleSuspended(p provider.Provider, status int, body []byte) bool {
-	if status != http.StatusForbidden {
-		return false
-	}
-	if a := accountAgent(p); a != "antigravity" && a != "gemini" {
+	if status != http.StatusForbidden || !googleSignIn(p) {
 		return false
 	}
 	return googleToS.Match(wordsOf(body))
+}
+
+// googleSignIn says p is signed in to Google's Code Assist with a Google
+// account: the built-in Antigravity or Gemini CLI account, or the
+// community plugin's that does the same, the Antigravity plugin's (OAuth)
+// or agy-cli's (Google's own agy program). A plugin account's Agent is
+// "plugin", so a suspended plugin account was read as an unknown failure
+// and asked again every few minutes (plugins#1148).
+func googleSignIn(p provider.Provider) bool {
+	switch accountAgent(p) {
+	case "antigravity", "gemini":
+		return true
+	}
+	switch p.PluginProvider() {
+	case "antigravity", "agy-cli":
+		return true
+	}
+	return false
 }
 
 // isWorkBuddy is whether p is a WorkBuddy account, either build's: the
@@ -1440,6 +1455,16 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		// connection answered seconds later (#5182). None is set aside
 		// and the failure counts nowhere; the next try goes out on a new
 		// connection (regionFresh)
+		return Rest{Why: why, Status: status, By: "off", Until: now}
+	}
+	if status == http.StatusForbidden && provider.HarnessOnly(wordsOf(body)) {
+		// OpenRouter serving a free model only to the agent apps it lists
+		// (provider.HarnessOnly): the app the request came from was
+		// turned away, not the key, whose other models answer as before,
+		// nor the model, which another agent's request may be served. Read
+		// as the key's 403 it set every OpenRouter model aside
+		// (Wade111999 on X); none is set aside and the failure counts
+		// nowhere
 		return Rest{Why: why, Status: status, By: "off", Until: now}
 	}
 	if status == http.StatusBadRequest && signatureRefused.Match(wordsOf(body)) {
