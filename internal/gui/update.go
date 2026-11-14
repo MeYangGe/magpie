@@ -433,7 +433,7 @@ func (u *updater) freshen() {
 		// the dialog asks for nothing to be downloaded; with downloads
 		// automatic it names the one waiting, which the restart goes
 		// into, and takes the notes the feed has for it now (#649)
-		u.ask(false, !settings.Load().NoAutoDownload)
+		u.ask(false, !settings.Shared().NoAutoDownload)
 	}
 }
 
@@ -491,6 +491,7 @@ func (u *updater) run() {
 	ctx := context.Background()
 	cctx, cancel := context.WithTimeout(ctx, checkWait)
 	defer cancel()
+	takeStable(cctx) // a fresh install of Stable's version stays on Stable
 	s := settings.Load()
 	u.mu.Lock()
 	lang := u.lang

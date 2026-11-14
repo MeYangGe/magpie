@@ -17,7 +17,6 @@ import (
 	"io"
 	"io/fs"
 	"maps"
-	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -36,6 +35,7 @@ import (
 	"github.com/yetone/magpie/internal/autostart"
 	"github.com/yetone/magpie/internal/bark"
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/desktopiso"
 	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/fonts"
 	"github.com/yetone/magpie/internal/fx"
@@ -236,6 +236,9 @@ type agentJSON struct {
 	// Isolated: Claude Desktop's Claude Magpie app (#5671), only where it
 	// can be (macOS): whether it is on, and the app
 	Isolated *agent.DesktopIsolated `json:"isolated,omitempty"`
+	// TwinCode: this Claude Code folder is Claude Magpie's Code tab's,
+	// which is on magpie through Claude Magpie (agent.DesktopTwinCode)
+	TwinCode bool `json:"twinCode,omitempty"`
 	// Telemetry: the agent's own telemetry to its vendor, where magpie
 	// knows the switch for it (agent/telemetry.go)
 	Telemetry *agent.TelemetryState `json:"telemetry,omitempty"`
@@ -1051,19 +1054,29 @@ var onDock func(settings.Settings)
 // assetTypes are the page's own files' types. The file server takes them
 // from Windows' registry, which another program may have changed — an SVG
 // served as something else draws no icon.
-var assetTypes = map[string]string{".svg": "image/svg+xml", ".png": "image/png", ".css": "text/css; charset=utf-8",
-	".js": "text/javascript; charset=utf-8", ".html": "text/html; charset=utf-8"}
+var assetTypes = map[string]string{
+	".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+	".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
+	".json": "application/json", ".svg": "image/svg+xml", ".png": "image/png",
+	".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
+	".ico": "image/x-icon", ".webm": "video/webm", ".mp4": "video/mp4",
+	".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf",
+	".txt": "text/plain; charset=utf-8", ".map": "application/json", ".wasm": "application/wasm",
+}
 
-// addAssetTypes is called by Handler, not init: the mime package reads
-// and parses the system's whole type table (/etc/apache2/mime.types,
-// ~18,000 allocations) the first time a type is added, and a launch that
-// serves no page (`magpie statusline` on every Claude Code message) never
-// needs it.
-var addAssetTypes = sync.OnceFunc(registerAssetTypes)
+// assetType is the type a file of magpie's own (or a plugin page's) is
+// served as, from assetTypes: "" for one it doesn't name.
+func assetType(name string) string { return assetTypes[strings.ToLower(path.Ext(name))] }
 
-func registerAssetTypes() {
-	for ext, t := range assetTypes {
-		mime.AddExtensionType(ext, t)
+// servedAs sets name's type on rw before http.ServeContent looks at the name.
+// Asked for a type, the mime package reads and parses the system's whole
+// table (/etc/apache2/mime.types, ~18,000 allocations) and keeps it for
+// good: ~2 MB of an idle tray magpie's live heap, from its first page.
+// And the system's table (Windows' registry, which another program may
+// have changed) never decides how the page's own files are read.
+func servedAs(rw http.ResponseWriter, name string) {
+	if t := assetType(name); t != "" && rw.Header().Get("Content-Type") == "" {
+		rw.Header().Set("Content-Type", t)
 	}
 }
 
@@ -1088,6 +1101,7 @@ func revalidated(next http.Handler) http.Handler {
 		if name == "" {
 			name = "index.html"
 		}
+		servedAs(rw, name)
 		sum, page, ok := staticSum(name, r.URL.Path == "/")
 		if !ok {
 			next.ServeHTTP(rw, r)
@@ -1174,7 +1188,6 @@ func versionedPage(page []byte) []byte {
 // gw is the gateway this process serves, or nil when another magpie has it
 // (for now: see startBackend).
 func Handler(w Windows, gw *gateway.Server) http.Handler {
-	addAssetTypes()
 	if gw != nil {
 		served.Store(gw)
 	}
@@ -1363,7 +1376,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	mux.HandleFunc("GET /api/drift", func(rw http.ResponseWriter, r *http.Request) {
 		out := map[string]*agent.Drift{}
 		for _, a := range agent.DetectedIn(heldAgents()) {
-			if d := a.Drift(); d != nil {
+			if d := a.DriftShown(); d != nil {
 				out[a.ID] = d
 			}
 		}
@@ -1824,7 +1837,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			Refused string `json:"refused,omitempty"`
 		}
 		if err := agent.SetTelemetryAll(in.Off); err != nil {
-			if settings.Load().AgentTelemetryOff != in.Off {
+			if settings.Shared().AgentTelemetryOff != in.Off {
 				fail(rw, err)
 				return
 			}
@@ -2115,7 +2128,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
-		pct := settings.Load().CodexAsyncCompactPercent
+		pct := settings.Shared().CodexAsyncCompactPercent
 		if in.Percent != nil {
 			pct = *in.Percent
 		}
@@ -3314,7 +3327,18 @@ func state() stateJSON {
 		if a.ID == "claude-desktop" && a.WSL == "" {
 			if iso, ok := agent.DesktopIsolatedHere(); ok {
 				aj.Isolated = &iso
+				// while Claude Magpie is on, the row's switch wires it
+				// alone (desktopSets) and the user's own Desktop stays
+				// signed in with Anthropic: the row is Claude Magpie's.
+				// Named Claude Desktop, it read as if their own Desktop
+				// had been connected (xMopf7RF on X, 0.1.4111)
+				if iso.On {
+					aj.Name = desktopiso.Name
+				}
 			}
+		}
+		if !aj.Wired && agent.DesktopTwinCode(a) {
+			aj.TwinCode = true
 		}
 		if a.Telemetry != nil {
 			// Settings › Privacy's switch for every agent reaches one
@@ -3389,7 +3413,7 @@ type signInOpened struct {
 // it went for signInOpened. linkOnly is this sign-in alone kept to its link
 // (the window's "Sign in on another computer"), whatever the setting.
 func openSignIn(w Windows, st provider.SignInState, linkOnly bool) signInOpened {
-	if linkOnly || settings.Load().SignInLinkOnly {
+	if linkOnly || settings.Shared().SignInLinkOnly {
 		return signInOpened{SignInState: st, LinkOnly: true}
 	}
 	var failed string
@@ -3411,7 +3435,7 @@ type mcpSignInOpened struct {
 // (settings.SignInLinkOnly), as an account's is. It opened the page in the
 // default browser whatever the setting (hkxhkxhkx on X).
 func openMCPSignIn(w Windows, st mcpauth.State) mcpSignInOpened {
-	if settings.Load().SignInLinkOnly {
+	if settings.Shared().SignInLinkOnly {
 		return mcpSignInOpened{State: st, LinkOnly: true}
 	}
 	if u, err := url.Parse(st.URL); st.URL != "" && (err != nil || !mcpauth.WebURL(u)) {
