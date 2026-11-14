@@ -35,6 +35,7 @@ import (
 	"github.com/yetone/magpie/internal/autostart"
 	"github.com/yetone/magpie/internal/bark"
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/codexcat"
 	"github.com/yetone/magpie/internal/desktopiso"
 	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/fonts"
@@ -849,7 +850,7 @@ func codexWindowUnder(st settings.Settings, model string) *codexRunWindow {
 	if !ok && strings.HasPrefix(model, provider.GroupPrefix) {
 		e, ok = provider.EntryOf(model)
 	}
-	if !ok || e.Context <= 0 || provider.CompactFor(st, e, provider.GroupFinder()) > 0 || st.Working(e.Context) < e.Context {
+	if !ok || e.Context <= 0 || provider.CompactFor(st, e, provider.GroupFinder()) > 0 || codexcat.Working(st, e.ID, e.Context) < e.Context {
 		return nil
 	}
 	return &codexRunWindow{Model: model, Window: e.Context, Size: tokensSize(e.Context)}
@@ -1208,6 +1209,12 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	pluginPageRoutes(mux, isWeb(w))
 	feedbackRoutes(mux)
 	appearanceRoutes(mux)
+	// the app's page closed or hidden: what its pages keep goes soon
+	// (awayPage); a write of nothing, so held's Changed passes it by
+	mux.HandleFunc("POST /api/page-away", func(rw http.ResponseWriter, r *http.Request) {
+		awayPage()
+		rw.WriteHeader(http.StatusNoContent)
+	})
 	// boot.js hands the page the saved language and theme before it paints:
 	// they came only with the settings, so the tabs showed English first
 	mux.HandleFunc("GET /boot.js", func(rw http.ResponseWriter, r *http.Request) {
@@ -1910,14 +1917,15 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		writeJSON(rw, settingsState())
 	})
 	// whether the gateway's /v1/models lists each model by its id without
-	// the provider as well (settings.BareModelIDs, love1sbug on X)
+	// the provider as well (settings.BareModelIDs, love1sbug on X), or
+	// with only, by that id alone (BareModelIDsOnly, qQianye on X)
 	mux.HandleFunc("POST /api/settings/bare-ids", func(rw http.ResponseWriter, r *http.Request) {
-		var in struct{ On bool }
+		var in struct{ On, Only bool }
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			fail(rw, err)
 			return
 		}
-		if err := provider.SetBareModelIDs(in.On); err != nil {
+		if err := provider.SetBareIDs(in.On, in.Only); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -2724,6 +2732,11 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		// the menu bar leaves out what the Overview hides (trayShown): it
+		// follows a card hidden or shown again at once
+		if (in.CardsHidden != nil || in.WindowsHidden != nil) && onTrayUsage != nil {
+			onTrayUsage()
+		}
 		writeJSON(rw, settingsState())
 	})
 	mux.HandleFunc("POST /api/settings/login", func(rw http.ResponseWriter, r *http.Request) {
@@ -3260,7 +3273,7 @@ func held(h http.Handler) http.Handler {
 			// 5x the CPU.
 			defer tightenGC()()
 		}
-		if !(api && r.Method == http.MethodGet) && r.URL.Path != "/api/update/using" {
+		if !(api && r.Method == http.MethodGet) && r.URL.Path != "/api/update/using" && r.URL.Path != "/api/page-away" {
 			// anything that may have written drops what was held, once it
 			// has answered with it (a page's word of input writes nothing)
 			defer provider.Changed()

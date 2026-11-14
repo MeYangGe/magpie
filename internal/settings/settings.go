@@ -826,6 +826,12 @@ type Settings struct {
 	// "codex/gpt-5.6-sol"), for clients moved from another proxy that ask
 	// for bare ids (love1sbug on X; provider.BareEntries). Off by default.
 	BareModelIDs bool `json:"bareModelIDs,omitempty"`
+	// BareModelIDsOnly, with BareModelIDs, has the list give a model its
+	// bare id in place of the provider/model ids it stands for, not beside
+	// them (qQianye on X: a client of a Docker magpie listed every model
+	// twice, and a gateway has no Agents page to pick models on). A
+	// provider/model id the bare one doesn't reach stays (provider.BareOnly).
+	BareModelIDsOnly bool `json:"bareModelIDsOnly,omitempty"`
 	// CodexAgentsV1 has the OpenAI models magpie hands Codex — the ChatGPT
 	// account's own, their codex/ ids, the groups one is in, and those a
 	// provider that seals as that backend does serves (catalog.Model.Seals:
@@ -1054,9 +1060,11 @@ type Settings struct {
 	// leaves out (whqtian_07012 on Discord), each as its tray card id (the
 	// provider id, then "|" and the account when there is one) and "|plan"
 	// or "|balance", so StepFun's balance card goes while its plan card
-	// stays. Only what is shown: the tray panel's Allowances tab and the
-	// TUI's Usage page leave them out too (onkashiko on X), while routing,
-	// caps, counting and the menu bar's cells keep them.
+	// stays. Only what is shown: the tray panel's Allowances tab, the menu
+	// bar's cells, tooltip and Windows' tray figure, and the TUI's Usage
+	// page leave them out too (onkashiko on X; provider.ShownQuotas), while
+	// routing, caps and counting keep them. TrayUsages keeps a hidden
+	// card's cell, which shows again with the card.
 	UsageCardsHidden []string `json:"usageCardsHidden,omitempty"`
 	// UsageWindowsHidden are the quota rows of an allowance card that the
 	// Overview leaves out (wangshaowei39 on X: Antigravity's Claude & GPT
@@ -1064,7 +1072,7 @@ type Settings struct {
 	// pool's or a model family's name, else the window's name. Every
 	// account of the provider alike. A card is never left with none: when
 	// every row is named, all show. Only what is shown, there, in the tray
-	// panel and in the TUI's Usage page.
+	// panel, the menu bar and the TUI's Usage page.
 	UsageWindowsHidden []string `json:"usageWindowsHidden,omitempty"`
 	// ClientAgents counts a client magpie doesn't know as one of the agents
 	// it does, on the Usage and Sessions pages (#1958, NorethSea): a bridge
