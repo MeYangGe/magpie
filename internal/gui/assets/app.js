@@ -9766,7 +9766,8 @@ function drawEditor(p, presetID) {
         took.push(t("Base URL") + " (" + t(API_NAMES[api]) + ")");
       }
     }
-    if (c.key) { key.value = draft.key = c.key; countKeys(); took.push(t("API key")); }
+    // no key box when keys are Accounts: none taken unseen
+    if (c.key && key.isConnected) { key.value = draft.key = c.key; countKeys(); took.push(t("API key")); }
     if (curlModel && c.model) { curlModel(c.model); took.push(t("model {model}", { model: c.model })); }
     if (took.length) notes.push(env ? t("Filled in from the pasted text: {what}.", { what: took.join(" · ") }) : t("Filled in from the curl command: {what}.", { what: took.join(" · ") }));
     if (curlBase && !c.api) notes.push(t("Its URL isn't an address ending in /chat/completions, /messages or /responses: type the base URL."));
@@ -16221,11 +16222,18 @@ function renderQuotas(lazy) {
     // many accounts (Linx on X: twenty-odd): the same, each a row
     const accts = !shut && !keys && several && subs.length > ACCTS_FOLD;
     const folded = shut ? new Set(subs) : keys ? keysFolded(subs) : accts ? acctsFolded(subs) : new Set();
+    // one account or key folds from its head, in brief its windows alone;
+    // folded cards are packed to one height (PILIHU2023 on X): one account,
+    // or several under All N accounts, a row; several in brief, whole rows.
+    // One with no figures (a plan alone) has nothing to fold
+    const figures = !several && (first.windows?.length || first.balance);
+    const lone = figures && !usageAcctOpen(first, subs);
+    if (lone || shut || several && !keys && subs.every((q) => !usageAcctOpen(q, subs))) card.dataset.folded = several && !shut ? "n" : 1;
     for (const sub of subs) {
       if (folded.has(sub)) continue;
       // "Every model" by the account, or the card's name: where the click
       // was, whichever way the meters under it grow or shrink
-      const brief = several && !usageAcctOpen(sub, subs);
+      const brief = !usageAcctOpen(sub, subs);
       const history = !brief && quotaHistoryView(sub);
       const shownSub = history ? quotaHistoryCard(sub, history) : sub;
       const [meters, every] = history ? [quotaWindows(shownSub), null] : familyQuota(sub);
@@ -16240,8 +16248,9 @@ function renderQuotas(lazy) {
         who.append(...quotaWho(sub));
         const warm = quotaWarm(sub);
         if (warm) who.append(warm);
-        // in brief, its resets and whether it uses them by itself (#719)
-        const auto = brief && autoResetBrief(sub);
+        // in brief, its resets and whether it uses them by itself (#719);
+        // one card folded shows its figures alone
+        const auto = brief && several && autoResetBrief(sub);
         if (auto) who.append(auto);
         if (sub.plan || sub.until) who.append(planSpan(sub));
         if (every) who.append(every);
@@ -16307,6 +16316,7 @@ function renderQuotas(lazy) {
       // kept in its room: the strip stays put
       if (shut) { m.inert = true; m.style.visibility = "hidden"; }
     }
+    if (figures) head.append(usageAcctFold(first, !lone));
     head.append(quotaCardMore(card, subs)); // its menu, where it is seen (page.js)
     if (keys && (folded.size || usageKeysAll.has(first.provider))) card.append(keysMore(first.provider, folded.size));
     if (accts && (folded.size || usageAcctsAll.has(first.provider))) card.append(acctsMore(first.provider, folded.size));
@@ -16485,106 +16495,6 @@ function keyCards(list) {
     merged.set(p, { ...p, balance: b.balance, balanceParts: b.balanceParts, balanceSplit: b.balanceSplit, balanceTrend: b.balanceTrend, balanceCard: trayCardID(b) });
   }
   return gone.size ? list.filter((q) => !gone.has(q)).map((q) => merged.get(q) || q) : list;
-}
-
-// packUsage lays the Usage cards in 260px columns, each card to the column
-// that ends highest (#860), as tall as what it holds (jen_celeus on X).
-const USAGE_MIN = 260, USAGE_GAP = 7;
-let usagePacked = null, usagePackFrame = 0;
-function packUsage() {
-  const list = $("#subscriptionUsage");
-  if (usagePackFrame) { cancelAnimationFrame(usagePackFrame); usagePackFrame = 0; }
-  if (!list || list.classList.contains("sorting")) return;
-  const cards = [...list.children], width = list.clientWidth;
-  if (!width || !cards.length) {
-    // out of sight: the grid as it is without packing, packed once it shows
-    list.classList.remove("packed");
-    list.style.gridTemplateColumns = "";
-    for (const c of cards) { c.style.gridArea = ""; c.style.minHeight = ""; }
-    usagePacked = null;
-    return;
-  }
-  // sorted: a drag keeps the columns it was shown in
-  const keys = cards.map((c) => c.dataset.key || "").sort().join();
-  const most = Math.max(1, Math.min(cards.length, Math.floor((width + USAGE_GAP) / (USAGE_MIN + USAGE_GAP))));
-  const place = (n, hs) => {
-    const { at, ends } = usagePlace(n, hs);
-    const tall = Math.max(...ends) - USAGE_GAP;
-    // what stands empty under the columns' ends, by the columns' width
-    const empty = ends.reduce((s, e) => s + tall - (e - USAGE_GAP), 0) * (width - (n - 1) * USAGE_GAP) / n;
-    return { n, at, tall, empty };
-  };
-  const heights = () => {
-    for (const c of cards) c.style.minHeight = "";
-    fitQuota([...list.querySelectorAll(".quota-windows")]);
-    return cards.map((c) => c.getBoundingClientRect().height);
-  };
-  const columns = (n) => { list.style.gridTemplateColumns = `repeat(${n}, minmax(0, 1fr))`; };
-  let best;
-  if (usagePacked && usagePacked.most === most && usagePacked.keys === keys && list.classList.contains("packed")) {
-    // the same cards, as many columns fitting: the columns as they are
-    best = place(usagePacked.n, heights());
-  } else {
-    list.classList.remove("packed");
-    for (const c of cards) c.style.gridArea = "";
-    for (let n = most; n >= Math.max(1, most - 1); n--) {
-      columns(n);
-      const p = place(n, heights());
-      if (!best) best = p;
-      else if (p.tall <= best.tall * 1.3 && p.empty < best.empty * 0.6) best = p;
-    }
-    // measured again: a count beside its name or under it is the width's
-    columns(best.n);
-    best = place(best.n, heights());
-  }
-  usagePacked = { most, keys, n: best.n };
-  list.classList.add("packed");
-  best.at.forEach(([c, top, h], i) => {
-    const area = `${top + 1} / ${c + 1} / span ${Math.max(1, h)} / span 1`;
-    if (cards[i].style.gridArea !== area) cards[i].style.gridArea = area;
-    if (cards[i].style.minHeight) cards[i].style.minHeight = "";
-  });
-}
-// usagePlace packs heights hs into n columns: [column, top, height] each
-function usagePlace(n, hs) {
-  const ends = Array(n).fill(0), at = [];
-  for (const h of hs.map(Math.ceil)) {
-    // the leftmost of those ending within a pixel of the highest
-    const low = Math.min(...ends), c = ends.findIndex((e) => e <= low + 1);
-    at.push([c, ends[c], h]);
-    ends[c] += h + USAGE_GAP;
-  }
-  return { at, ends };
-}
-// usageLayout: dragCards' layout for the packed Usage cards
-function usageLayout(rects) {
-  const list = $("#subscriptionUsage");
-  const n = usagePacked?.n;
-  if (!n || !list?.classList.contains("packed")) return null;
-  const hs = rects.map((r) => r.height), now = usagePlace(n, hs).at;
-  const left = [];
-  now.forEach(([c], i) => { left[c] ??= rects[i].left; });
-  if (left.length < n || left.includes(undefined)) return null;
-  const top0 = rects[0].top - now[0][1];
-  return (order) => {
-    const at = [];
-    usagePlace(n, order.map((i) => hs[i])).at.forEach(([c, top], k) => { at[order[k]] = { left: left[c], top: top0 + top }; });
-    return at;
-  };
-}
-
-// a card's height or the page's width moved: packed on the next frame (in
-// the observer's call WebKit reports a ResizeObserver loop). What is in a
-// card is watched too, so one that only shrinks is packed again (#2059).
-const usagePack = new ResizeObserver(() => { if (!usagePackFrame) usagePackFrame = requestAnimationFrame(packUsage); });
-function packUsageNow(list) {
-  packUsage();
-  usagePack.disconnect();
-  usagePack.observe(list);
-  for (const card of list.children) {
-    usagePack.observe(card);
-    for (const part of card.children) usagePack.observe(part);
-  }
 }
 
 // usageHandle: a card's logo is its handle (drag, or Alt+arrows); a grip
@@ -19383,8 +19293,10 @@ const CURRENCIES = [["usd", "$ USD"], ["cny", "¥ CNY"], ["provider", "By provid
 // The text size is the windows' own zoom, as a browser's Ctrl/Cmd +: the
 // page is laid out again in larger CSS pixels, so everything it measures is
 // as at 100%, and magpie sizes the windows around it (textsize.go). None is
-// under 100%: WebView2 and WebKitGTK zoom no smaller through Wails.
-const TEXT_SIZES = [100, 110, 125, 150];
+// under 100%: WebView2 and WebKitGTK zoom no smaller through Wails. 115 and
+// 120 sit between 110 and 125, where 110 read small and 125 crowded on a 4K
+// screen at 200% (WeltAn_X on X).
+const TEXT_SIZES = [100, 110, 115, 120, 125, 150];
 const textSizeKeys = () => /^Mac/.test(navigator.platform) ? "⌘+ ⌘− ⌘0" : "Ctrl+ Ctrl− Ctrl+0";
 // --zoom is the text size for what is placed against the window's own
 // drawing, which does not grow with the page: the Mac's traffic lights.
@@ -20051,6 +19963,8 @@ function setUpdateMirror(mirror) {
   return writingPrefs(api("settings/update-mirror", { mirror }))
     .then((ns) => { prefs = ns; mirrorEditing = false; mirrorDraft = mirrorErr = ""; renderSettings(); status(t("Saved"), "ok", 1500); return ns; });
 }
+// Use a mirror… and Change open the field from mirroredit.js
+const editMirror = (r, s, v) => import("./mirroredit.js").then(() => { mirrorEditing = true; mirrorDraft = v; renderUpdateMirror(r, s); }, statusErr);
 function renderUpdateMirror(r, s) {
   r.classList.add("update-mirror-row");
   const who = r.querySelector(".who"), val = r.querySelector(".val");
@@ -20061,37 +19975,24 @@ function renderUpdateMirror(r, s) {
   const m = s.updateMirror || "";
   sub.textContent = mirrorErr || (m ? t("Updates are downloaded from usemagpie.ai, and through this mirror when that fails, each checked against usemagpie.ai's checksum")
     : t("Updates are downloaded from usemagpie.ai, and from GitHub when that fails; a mirror can stand in for GitHub where it is slow"));
+  // the docs' Mirrors page says which mirror and how (WeltAn_X on X)
+  const more = el("button", "sub-more", t("How mirrors work"));
+  more.onclick = () => api("open", { url: "https://usemagpie.ai/docs/" + ({ zh: "zh/", "zh-TW": "zh/", ja: "ja/" }[locale] || "") + "mirrors#settings" }).catch(() => {});
+  sub.append(" ", more);
   sub.classList.toggle("err", !!mirrorErr);
   sub.title = t("The update and its checksum always come from usemagpie.ai; a file from the mirror that doesn't match it is not installed.");
-  if (!mirrorEditing) {
-    if (m) {
-      const official = el("button", "text", t("Remove mirror"));
-      official.onclick = () => setUpdateMirror("").catch(statusTErr);
-      const change = el("button", "text", t("Change"));
-      change.onclick = () => { mirrorEditing = true; mirrorDraft = m; renderUpdateMirror(r, s); };
-      val.append(el("code", "", m), change, official);
-    } else {
-      const add = el("button", "text", t("Use a mirror…"));
-      add.onclick = () => { mirrorEditing = true; mirrorDraft = ""; renderUpdateMirror(r, s); };
-      val.append(el("code", "", "usemagpie.ai"), add);
-    }
-    return;
+  if (mirrorEditing) return mirrorEdit(r, s, sub, val);
+  if (m) {
+    const official = el("button", "text", t("Remove mirror"));
+    official.onclick = () => setUpdateMirror("").catch(statusTErr);
+    const change = el("button", "text", t("Change"));
+    change.onclick = () => editMirror(r, s, m);
+    val.append(el("code", "", m), change, official);
+  } else {
+    const add = el("button", "text", t("Use a mirror…"));
+    add.onclick = () => editMirror(r, s, "");
+    val.append(el("code", "", "usemagpie.ai"), add);
   }
-  const i = input(mirrorDraft, "https://mirror.example/");
-  i.className = "words update-mirror-input";
-  i.setAttribute("aria-label", t("Mirror address"));
-  i.oninput = () => { mirrorDraft = i.value; };
-  const save = el("button", "text", t("Save"));
-  save.onclick = () => {
-    const v = i.value.trim();
-    if (!v) return i.focus(NO_SCROLL);
-    setUpdateMirror(v).catch((e) => { mirrorErr = t(e.message); statusTErr(e); renderSettings(); });
-  };
-  const cancel = el("button", "text", t("Cancel"));
-  cancel.onclick = () => { mirrorEditing = false; mirrorDraft = mirrorErr = ""; renderUpdateMirror(r, s); };
-  i.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") save.onclick(); else if (e.key === "Escape") cancel.onclick(); };
-  val.append(i, cancel, save);
-  queueMicrotask(() => { if (i.isConnected && document.activeElement !== i) i.focus(NO_SCROLL); });
 }
 
 function renderSettings() {
@@ -20256,18 +20157,19 @@ function renderSettings() {
   // kept in place while off, dimmed, its height the same (a row or a line
   // taken away would shorten the page under the click), for when they are
   // turned on again
-  row(t("Check every"), s.noAutoUpdate ? t("While automatic updates are on") : t("How often magpie looks for a newer version"), "",
+  row(t("Update check interval"), s.noAutoUpdate ? t("While automatic updates are on") : t("How often magpie looks for a newer version"), "",
     segs(UPDATE_EVERY.map((m) => [m, m < 60 ? t("{n} min", { n: m }) : t("{n} h", { n: m / 60 })]), s.updateEvery || 360,
       (updateEvery) => savePrefs({ ...keep, updateEvery }))).classList.add("update-every-row", ...(s.noAutoUpdate ? ["off"] : []));
   // which versions an update offers (ssharpcc on X): every one as it comes
-  // out, or Stable, one a week and an urgent one at once, chosen by the
-  // update feed. It holds for the version row's Check too, so it stays lit
-  // with automatic updates off.
-  row(t("Update channel"), s.updateChannel === "stable"
-    ? t("One version a week, out for three days first, and urgent fixes at once. What's new lists every change since yours")
-    : t("Every version as soon as it is out"), "",
-    segs([["every", t("Every version")], ["stable", t("Stable")]], s.updateChannel === "stable" ? "stable" : "every",
-      (v) => savePrefs({ ...keep, updateChannel: v === "stable" ? "stable" : "" }))).classList.add("update-channel-row");
+  // out; Daily, one a day that passed its tests (fishmagic80 on X); or
+  // Stable, one a week; urgent ones at once on both, chosen by the update
+  // feed. It holds for the version row's Check too, so it stays lit with
+  // automatic updates off.
+  const uc = ["stable", "daily"].includes(s.updateChannel) ? s.updateChannel : "every";
+  row(t("Update channel"), t(uc === "stable" ? "One version a week, out for three days first, and urgent fixes at once. What's new lists every change since yours"
+    : uc === "daily" ? "One version a day, the newest that passed its tests, and urgent fixes at once. What's new lists every change since yours" : "Every version as soon as it is out"), "",
+    segs([["every", t("Every version")], ["daily", t("Daily")], ["stable", t("Stable")]], uc,
+      (v) => savePrefs({ ...keep, updateChannel: v === "every" ? "" : v }))).classList.add("update-channel-row");
   // whether a newer version found is downloaded at once, or only said to
   // be out and downloaded on a click (#2296): a metered network or a
   // proxy billed by traffic. It holds for the version row's Check too.
@@ -21211,22 +21113,24 @@ function renderWarmNow(agent, users, rowId) {
   if (users.length > 1) b.setAttribute("aria-haspopup", "menu");
   const send = async (user) => {
     const say = (o) => { warmNowSaid[agent] = o; if ($(rowId).isConnected) renderWarmNow(agent, users, rowId); };
-    say({ busy: true, text: t("Warming up {who}…", { who: user }) });
-    try {
-      await api("warm-now", { agent, user });
-      say({ text: t("Warmed up {who} {when}", { who: user, when: syncWhen(new Date().toISOString()) }) });
-      status(t("Warmed up {who}", { who: user }), "ok");
-      loadQuotas(); // the window it started
-    } catch (e) {
-      say({ bad: true, text: t("Couldn't warm up {who}: {why}", { who: user, why: e.message }) });
-      status(t("Couldn't warm up {who}: {why}", { who: user, why: e.message }), "err");
-    }
+    // "" is All accounts (CoderMaurice on X): each in use and not in a
+    // window already, what each came to on the one line
+    const who = user || t("All accounts");
+    say({ busy: true, text: t("Warming up {who}…", { who }) });
+    let rs;
+    try { rs = user ? (await api("warm-now", { agent, user }), [{ user }]) : (await api("warm-all", { agent })).results; } catch (e) { rs = [{ user: who, error: e.message }]; }
+    const by = (f) => rs.filter(f).map((r) => r.user).join(", "), ok = by((r) => !r.skip && !r.error), on = by((r) => r.skip == "running"), bad = rs.filter((r) => r.error);
+    const text = [ok && t("Warmed up {who} {when}", { who: ok, when: syncWhen(new Date().toISOString()) }), on && t("Already in a window: {who}", { who: on }),
+      ...bad.map((r) => t("Couldn't warm up {who}: {why}", { who: r.user, why: r.error }))].filter(Boolean).join(" · ") || t("No account in use to warm up");
+    say({ bad: !!bad.length, text });
+    status(text, bad.length ? "err" : "ok");
+    if (ok) loadQuotas(); // the windows it started
   };
   b.onclick = (e) => {
     e.stopPropagation();
     if (users.length === 1) return send(users[0]);
     if (b.classList.contains("open")) return closeProtoMenu();
-    openProtoMenu(b, users.map((u) => ({ v: u, name: u, note: "", literalName: true })), null, send, "Warm up which account", "sess-menu", "right");
+    openProtoMenu(b, [{ v: "", name: "All accounts", note: "" }, ...users.map((u) => ({ v: u, name: u, note: "", literalName: true }))], null, send, "Warm up which account", "sess-menu", "right");
   };
   box.replaceChildren(b);
 }
@@ -22711,8 +22615,10 @@ async function renderUpdate(r, u) {
       again(1000);
       break;
     case "latest":
-      // Stable's says the newest out (ylspcm on X)
-      sub.textContent = u.newest ? t("Up to date on Stable · {v} is out on Every version", { v: u.newest }) : t(u.channel ? "Up to date on Stable" : "Up to date");
+      // Stable's and Daily's say the newest out (ylspcm on X)
+      sub.textContent = u.channel === "daily"
+        ? t(u.newest ? "Up to date on Daily · {v} is out on Every version" : "Up to date on Daily", { v: u.newest })
+        : u.newest ? t("Up to date on Stable · {v} is out on Every version", { v: u.newest }) : t(u.channel ? "Up to date on Stable" : "Up to date");
       if (u.newest) btn(t("Switch to Every version"), () => savePrefs({ ...prefsKeep(prefs), updateChannel: "" }));
       btn(t("Check"), check);
       break;
@@ -23411,7 +23317,7 @@ if (mode === "window") for (const b of $("#nav").querySelectorAll("button[data-v
   b.onpointerdown = (e) => { if (e.button === 0) navTopGo(b, true); };
   b.onpointercancel = () => navTopGo(navTopOn(), true);
   b.onpointerleave = (e) => { if (e.buttons & 1) navTopGo(navTopOn(), true); };
-  b.onclick = () => { show(b.dataset.view).then((went) => { if (!went) navTopGo(navTopOn(), true); }); b.blur(); };
+  b.onclick = () => { if (window.navFold?.(b.dataset.view)) return b.blur(); show(b.dataset.view).then((went) => { if (!went) navTopGo(navTopOn(), true); }); b.blur(); };
 }
 // gateway mode's pages' tabs; the page open, one of them, gives way to Providers
 function setGatewayMode(on) {
@@ -23430,7 +23336,9 @@ function offView(v) {
   if (v === "groups" && !gone("routing")) return "routing";
   return gatewayMode || gone("agents") ? "providers" : "agents";
 }
-const navMine = () => { try { return JSON.parse(localStorage.getItem("magpie.navHidden") || "[]"); } catch { return []; } }; // navpages.js
+// a list the sidebar keeps: the pages hidden (navpages.js), the lists folded (navicons.js navFold)
+const navList = (k) => { try { return JSON.parse(localStorage.getItem("magpie.nav" + k) || "[]"); } catch { return []; } };
+const navMine = () => navList("Hidden");
 function navHides() {
   if (mode !== "window") return;
   for (const b of $("#nav").querySelectorAll("button[data-view]")) b.hidden = (gatewayMode && GATEWAY_HIDES.includes(b.dataset.view)) || featureHides(b) || navMine().includes(b.dataset.view);
@@ -23600,7 +23508,7 @@ async function openSettingsAt(e, tab, row) {
   void row.offsetWidth; // the light goes again on a second click
   row.classList.add("flash");
 }
-$("#prefs").onclick = () => { openSettings(); $("#prefs").blur(); };
+$("#prefs").onclick = () => { window.navFold?.("settings") || openSettings(); $("#prefs").blur(); };
 
 // The header's refresh reads again what the page shown draws (#844)
 function refreshKind() {
@@ -23983,14 +23891,17 @@ function navSubs() {
   const side = sideNav();
   const items = side ? navSubItems(view) : [];
   const at = view === "settings" ? $("#prefs") : nav.querySelector(`button[data-view="${view}"]`);
-  const sig = [side, view, locale, pluginUpdates, ...items.map((b) => b.textContent.trim() + (b.classList.contains("on") ? "*" : ""))].join("|");
+  // the open page's row folds its list (navicons.js navFold), and says so
+  const folds = side && at && items.length > 1, shut = folds && navList("Folded").includes(view);
+  const sig = [side, view, locale, pluginUpdates, shut, ...items.map((b) => b.textContent.trim() + (b.classList.contains("on") ? "*" : ""))].join("|");
   if (sig === navSubsAt) return;
   navSubsAt = sig;
+  window.navFoldRows?.(at, folds, shut);
   let box = document.querySelector(".nav-sub:not(.leaving)");
-  const want = side && at && items.length > 1;
+  const want = folds && !shut;
   const above = at?.id === "prefs";
   if (box && (!want || box.dataset.view !== view || (above ? box.nextElementSibling : box.previousElementSibling) !== at)) { navSubLeave(box); box = null; }
-  if (want && !NAV_SUB_IC) import("./navicons.js").then(() => { navSubsAt = ""; navSubs(); }, () => {});
+  if (folds && !NAV_SUB_IC) import("./navicons.js").then(() => { navSubsAt = ""; navSubs(); }, () => {});
   if (want) {
     const fresh = !box;
     if (fresh) {

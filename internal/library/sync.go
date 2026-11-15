@@ -55,6 +55,9 @@ type Result struct {
 	// Subagents is, for subagents imported from a repository, what was
 	// added, updated, had already, and left as changed here
 	Subagents *SubagentsImported `json:"subagents,omitempty"`
+	// Commands is, for slash commands imported from the agents, what was
+	// added and the library's own given to more agents
+	Commands *CommandsImported `json:"commands,omitempty"`
 	// dropped are the servers taken out of an agent's config, as it had
 	// them, whose processes go once no agent runs them (mcp_reap.go)
 	dropped []*Server
@@ -616,6 +619,26 @@ func readView(problems []Problem, glance bool) (*View, error) {
 		forget = readParts()
 		if err := l.save(); err != nil {
 			return nil, err
+		}
+	}
+	// a skill that went in beside itself before magpie told the two
+	// apart (skill_beside.go) is folded back on the next read, not only on
+	// the next change: upgrading alone left blog-team beside blog (Refeccd
+	// on X). The agents' links follow at once, as after a change: a
+	// folded copy's folder is gone, and theirs would point at nothing.
+	if slices.ContainsFunc(l.Skills, func(s *Skill) bool { return s.Called != "" && s.Source.remote() }) {
+		if folded := l.foldBeside(); len(folded) > 0 {
+			forget()
+			forget = func() {}
+			if err := l.save(); err != nil {
+				return nil, err
+			}
+			res := l.sync()
+			if err := l.save(); err != nil {
+				return nil, err
+			}
+			problems = append(slices.Clone(problems), res.Problems...)
+			forget = readParts()
 		}
 	}
 	// a plugin's tools, a server of their own (plugin_tools.go), and a
