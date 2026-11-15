@@ -547,6 +547,25 @@ the panel and gateway mode.**
   and read the `pageerror` stack before calling a timeout load.
 - Seen 1× (2026-11-13).
 
+**A form's name and its control are lined up by the row, never by a
+padding guessed for one kind of control.** Every editor grid (`.editor`,
+a dialog's body, Advanced's rows, Connect) sets its rows on their first
+baseline; a control with no text of its own (a switch, the icon box)
+carries a text line at its middle. A row that starts with a text field
+is set at its top instead, its name on the field's line (`--field-h`):
+WebKit lays a baseline row out again on every layout, and a focused field
+laid out again scrolls the page back to itself. `form-align.test.cjs`
+measures every label beside its control, in every editor it opens.
+- The owner, 11-12, a second time: Free for me and Redaction sat 4-5px
+  under their ticks. Labels had `padding-top: 5px`, right for a 29px
+  input only; the icon row was 5px off, Extra body and every tick too.
+- A baseline row never takes its baseline from a scroller: at 520px
+  Connect's options wrap instead, since WebKit grew the row 6px each time
+  their scrollbar came and went.
+- A new kind of control in a form row runs form-align.test.cjs, and a new
+  editor is added to it.
+- Seen 1× (2026-11-12).
+
 **Playwright's WebKit is not WebKitGTK.** A GUI change with motion or a new
 browser API is tried in the real Linux app too.
 - 18e82adc6 (10-11) traded the layouts in a view transition. The GUI suite
@@ -627,6 +646,21 @@ Two habits from them:
   TestProviderListReadsSettingsOnce's 2s bar, now a count of parses
   (a36319d60), and TestCursorEditorCopiedOncePerChange's 100ms linger
   (2efb71ea0).
+
+**A helper that gives a test a new HOME also stops what an earlier test
+started under the old one.**
+- #6761 (11-15): TestRemoveListedAccountLeavesHiddenNamesake was red in
+  full runs and green alone. TestPluginEmptyKeyKeyAsked, 1779 tests
+  earlier, started a real plugin host and left it up; plugin.SignOut
+  asks a running host, whose files were the earlier test's HOME, so the
+  remove landed there. A bisect on mote found it. 248edad80 has
+  claudeHome stop a running host before and after each test.
+- The same class as the second half of #2449 (10-15) and #2702 (10-17):
+  "plugin hosts outliving their test's HOME". It was fixed per test
+  then, not in the helper every test goes through.
+- When a test is red only in a full run, bisect the tests that run
+  before it (`-run '^(first half|Target)$'`) instead of rerunning.
+- Seen 2× (2026-10-17, 2026-11-15).
 
 **A test that breaks a shared file puts its bytes back, and its cleanup
 checks the write.**
@@ -817,6 +851,13 @@ cause:
 - A cancelled run tests nothing. On 10-14 nine pushes in ten minutes
   cancelled each other's runs, and 3c4b4dc97 never had a run of its own;
   its red showed first at 84f14e555.
+  - 11-15: main's colour is the Test workflow's. The review loop read
+    the Docker workflow's green runs and called main green while Test
+    was red at 923cc8747 (macOS step cap at 75m, nothing printed after
+    internal/routes, #5451) and e99307fb8 (#6761). Use
+    `gh run list -w Test`. Of the 12 Test runs before 9bcdcfb7d, 7 were
+    cancelled by the next push, and #6764 was filed for the same test
+    as #6761 the same hour: search the test's name before filing.
   - 11-13: 459d668b3 (#6428) edited docs/sync.html and did not run
     `node llms-full.mjs`. site's "llms-full.txt is current" test went
     red at 21:05. Every Test run after it was cancelled by the next
@@ -857,7 +898,12 @@ review listed.** (Merging only the reviewed head, and writing what was run
 before the merge, are in the code standards.)
 - #885 and #826 merged with their own new test failing. #846 merged with
   four known-wrong translations. Fix or file the problems first.
-- Seen 1× (2026-10-05).
+- plugins#1183 (11-15): the harm scan asked for a test of the tool-loop
+  case, where a dropped signed thought could be refused. The PR merged
+  38 minutes later. The merge comment argued the case away and added no
+  such test. A case a review asks to test gets a test, or an issue that
+  says it is untested.
+- Seen 2× (2026-10-05, 2026-11-15).
 
 **An issue that names two problems is closed when both are fixed.**
 - #2449's title named a lost tail and plugin hosts outliving their
@@ -1572,6 +1618,13 @@ each one.
     Instrumented, every red was a detached button; 17d230d65 fixed it
     in one helper, 240 of 240 green in 8 parallel runs. When a comment
     can name the cause, the fix is usually shorter than the comment.
+  - GUI tests in every file a change can reach, a guard red 14 days:
+    57246b381 (11-01) put an "All N accounts" strip over each Usage
+    card of several accounts and ran four GUI files, not usage-fold,
+    whose "most on one screen" guard fell from 15 to 11 that day. It
+    was filed on #6003 (11-10) and called "the same on main" for five
+    days; bisected on 11-15, nine steps on mica. A layout change runs
+    every file of its page.
 - **Done right on 10-17.** The retire stack (0f1666b38 to de671719a)
   diffed staticcheck's U1000 against its base for dead code, b98f906b1
   was red on the old code for an own-account gap, and 8 subscriptions

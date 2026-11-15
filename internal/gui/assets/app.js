@@ -2042,7 +2042,7 @@ function appOutSaid(a) {
   let s = o.user
     ? t("{user}'s ChatGPT allowance is used up, so magpie serves {agent}'s turns until it resets.", { user: o.user, agent: a.name })
     : t("{agent}'s ChatGPT allowance is used up, so magpie serves its turns until it resets.", { agent: a.name });
-  s += " " + t("Till then the {agent} app's ChatGPT side is off: its ChatGPT chats and projects, browser use (its Chrome control), cloud tasks, its account, its usage meter and Log out. They come back after the reset, once the app's app-server restarts: this row offers the restart then.", { agent: a.name });
+  s += " " + t("Till then the {agent} app's ChatGPT side is off: its ChatGPT chats and projects, browser use (its Chrome control), cloud tasks, its phone connection, its account, its usage meter and Log out. They come back after the reset, once the app's app-server restarts: this row offers the restart then.", { agent: a.name });
   if (o.stuck) s += " " + t("magpie couldn't restart the {agent} app's app-server: quit the app and open it again to send.", { agent: a.name });
   return s + " " + t("Keep on ChatGPT (its sign-in's Always ChatGPT) leaves {agent} on its ChatGPT account instead: it shows its own limit message till the reset, and magpie no longer takes it over.", { agent: a.name });
 }
@@ -2050,7 +2050,7 @@ function appOutSaid(a) {
 // appBackSaid: Codex back on its ChatGPT account after the reset, its app
 // on the app-server that read no account as it started (mail, 11-04)
 function appBackSaid(a) {
-  return t("magpie gave {agent} back its ChatGPT account after the reset. The {agent} app still runs on the app-server it started while magpie served it, so it shows no account, no usage and none of its ChatGPT projects or chats until that restarts. Restart does it now; its window stays.", { agent: a.name });
+  return t("magpie gave {agent} back its ChatGPT account after the reset. The {agent} app still runs on the app-server it started while magpie served it, so it shows no account, no usage, no phone connection and none of its ChatGPT projects or chats until that restarts. Restart does it now; its window stays.", { agent: a.name });
 }
 
 // appBackRestart: the Codex app's app-server restarted, so it reads its
@@ -2552,6 +2552,7 @@ function cliTag(a) {
   // the desktop app (the Codex app, #1334): its version, which updates
   // itself; one connection serves the app and the CLI
   if (c.app) {
+    box.classList.add("with-app");
     const v = el("span", "ag-ver ag-app", t("App {v}", { v: c.app }));
     v.title = t("The {agent} app {v}. It reads the same settings as the CLI: connecting {agent} here connects both", { agent: a.name, v: c.app });
     box.append(v);
@@ -2569,7 +2570,9 @@ function cliTag(a) {
 function paintCLIButton(b, c, busy) {
   b.classList.toggle("busy", busy);
   b.setAttribute("aria-busy", String(busy));
-  const text = busy ? t("Updating…") : t("Update to {v}", { v: c.latest });
+  // beside its app's version, it says it updates the CLI: "Update to
+  // 0.2.2-rc.1" next to "App 0.2.2-rc.2" read as a step back (roger1huh on X)
+  const text = busy ? t("Updating…") : t(c.app ? "Update CLI to {v}" : "Update to {v}", { v: c.latest });
   // named even where a tight row shows only the arrow
   b.setAttribute("aria-label", text);
   b.replaceChildren(svg(busy ? CLI_SPIN : CLI_UP, 11, 1.8), el("span", "", text));
@@ -7553,7 +7556,7 @@ let fieldIDs = 0;
 // (yujezhang on X, 11-10: "界面只保留完成操作必需的信息"). lead is the
 // one short line that stays in sight there: what turning it on costs.
 function field(label, control, hint, lead) {
-  const l = el("label", control.classList?.contains("accts") ? "by-list" : "", label); // on a list's first row
+  const l = el("label", "", label);
   const wrap = el("div", hint ? "fld" : "");
   wrap.append(control);
   if (hint) {
@@ -8677,6 +8680,30 @@ function skelWatch() {
   }, 250);
 }
 skelWatch();
+// A form row whose control starts with a text field is set at its top,
+// its name on the field's first line (app.css, .at-top). Marked here: a
+// :has(+ …) rule held WebKit ~9s a layout on Codex's editor.
+const ROW_GRIDS = ".editor, .modal .editor.framed > .ebody, .editor .more .inner, .connect";
+const TEXTY = "input:not([type=checkbox], [type=radio], [type=hidden], [type=range], [type=color], [type=file]), textarea";
+function textFirst(n) {
+  for (let i = 0; i < 4 && n; i++, n = n.firstElementChild) if (n.matches(TEXTY)) return true;
+  return false;
+}
+function settleRows(recs) {
+  const grids = new Set();
+  for (const r of recs) {
+    const g = r.target.closest?.(ROW_GRIDS);
+    if (g) grids.add(g);
+    for (const n of r.addedNodes) if (n.nodeType === 1) for (const x of n.matches(ROW_GRIDS) ? [n] : n.querySelectorAll(ROW_GRIDS)) grids.add(x);
+  }
+  for (const g of grids) for (const c of g.children) {
+    if (c.tagName !== "LABEL") { c.classList.toggle("at-top", textFirst(c)); continue; }
+    const nx = c.nextElementSibling;
+    c.classList.toggle("at-top", !!nx && textFirst(nx));
+    c.classList.toggle("by-json", !!nx && (nx.matches(".extra-body") || !!nx.querySelector(":scope > .extra-body")));
+  }
+}
+new MutationObserver(settleRows).observe(document.body, { childList: true, subtree: true });
 async function skelBird() {
   skelFlying = true;
   let release;
@@ -20180,6 +20207,13 @@ function renderSettings() {
   row(t("Restart automatically"), s.noAutoUpdate ? t("While automatic updates are on") : t("Once an update is downloaded, restarts into it without cutting off an agent's request"), "",
     segsOO(s.autoRestart, (v) => savePrefs({ ...keep, autoRestart: v }))).classList.add("update-restart-row", ...(s.noAutoUpdate ? ["off"] : []));
   renderUpdateMirror(row(t("Download source"), "", ""), s);
+  // beside Download source, both where an update comes from (WeltAn_X on X)
+  const src = el("button", "sess-pick pref-pick");
+  Object.assign(src, { type: "button", id: "updateSourcePick" });
+  src.setAttribute("aria-haspopup", "menu");
+  src.setAttribute("aria-expanded", "false");
+  row(t("Update source"), "", "", src).id = "updateSourceRow";
+  import("./updatesource.js").then(() => src.isConnected && updateSourcePick(s, keep), statusErr);
   const open = el("button", "text", t("Open"));
   open.onclick = () => api("settings/reveal", {}).catch(statusErr);
   // portable (a data folder beside magpie, #508): everything is in there
@@ -20791,7 +20825,6 @@ function renderProxy(s, keep) {
   });
   renderProxyCheck(s, row);
   renderPluginProxy(s, keep);
-  import("./updatesource.js").then(() => updateSourcePick(s, keep), statusErr);
 }
 const proxyState = { custom: false };
 // plugin downloads' proxy (JonahFu on X); plugins' vendor requests follow the one above
@@ -23589,6 +23622,39 @@ $(".top").addEventListener("dblclick", (e) => {
 if (mode === "window") { $("#open").remove(); $("#openMain").remove(); $("#quit").remove(); }
 else { $("#nav").remove(); $("#side").remove(); }
 if (mode !== "window" || !document.body.classList.contains("linux")) $("#winclose").remove();
+
+// The title bar's pin keeps the window above other apps' windows, for Usage
+// or Routing watched while working elsewhere (NovaStudiosss on X): in the
+// app's main window, where boot.js says it can be pinned (ontop.go). Pressed,
+// the pin is filled; each click is saved in turn, and one that fails puts
+// back what is saved.
+let onTop = !!window.bootPrefs?.onTop, onTopSaved = onTop, onTopQueue = Promise.resolve();
+function renderOnTop() {
+  const b = $("#pin");
+  if (!b) return;
+  b.classList.toggle("on", onTop);
+  b.setAttribute("aria-pressed", String(onTop));
+  b.dataset.enTitle = onTop ? "Stop keeping on top" : "Keep on top";
+  b.title = t(b.dataset.enTitle);
+}
+if (mode === "window" && window.bootPrefs?.pin && !web) {
+  $("#pin").hidden = false;
+  renderOnTop();
+  $("#pin").onclick = () => {
+    onTop = !onTop;
+    renderOnTop();
+    const want = onTop;
+    onTopQueue = onTopQueue.then(async () => {
+      try {
+        onTopSaved = (await api("window/ontop?on=" + (want ? 1 : 0), {})).onTop;
+      } catch (e) {
+        onTop = onTopSaved;
+        renderOnTop();
+        statusErr(e);
+      }
+    });
+  };
+} else $("#pin").remove();
 
 // reload the config files when the panel comes back into view
 // The magpie in the corner flaps and wags its tail as the window opens and
