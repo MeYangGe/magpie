@@ -431,6 +431,16 @@ and its failure message counts against what it compared.**
   the byte where the bodies part and what each side has there.
 - Seen 1× (2026-11-15).
 
+**A test that bounds a count of work is run at -cpu 1 too.**
+- 9dcec6751 (11-16) bounded the request archive's LISTs at about 45 for
+  200 calls and measured 39 on a many-core box. On one CPU every upload
+  landed during a prune pass and ran another that listed the bucket
+  again for nothing: 44 to 68 LISTs, red on macOS CI at 50f7a8e01. The
+  test was right; the code did the extra work (fixed in 39e4b9934).
+- Run such a test with `-count=10 -cpu 1,4` before calling its bound
+  measured.
+- Seen 1× (2026-11-16).
+
 **A full run gives the slow packages room.** `go test ./...` at the default
 10m timeout times out in internal/gateway (#2108), and under load in
 internal/provider and internal/agent. Use -timeout 45m, so "every package
@@ -1015,6 +1025,20 @@ failure behind it.**
 - Check each package with `npm view --prefer-online`, not the run's
   colour, until the known red is fixed.
 - Seen 1× (2026-10-17).
+
+**A GUI suite with hundreds of known reds is not a baseline.** "The same
+files fail at base" passes any change while main carries that many.
+- 8608ce024 (11-16) recorded 1041 GUI fails at its head and 971 at
+  origin/main, and shipped on "same files". Run alone on mica at
+  8608ce024 (load 9), four of those files were 8 of 60 red
+  (key-replace, plugin-card-update, usage-fold), each already filed:
+  #4126, #3079, #4790, #6003. On 11-16, 465 issues titled "gui tests"
+  were open, none assigned, and 2 had been closed since 11-13.
+- Filing a red is not owning it. A change that names GUI reds takes one
+  of the open ones, or fixes the file it touched. Measure a change by
+  the reds it adds, test by test. A matching file count at base is not
+  that measure.
+- Seen 1× (2026-11-16).
 
 **Keep the issue open until the reporter's case works. Reopen when they say
 it doesn't.**
