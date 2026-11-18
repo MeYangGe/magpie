@@ -18,6 +18,7 @@ import (
 	"github.com/yetone/magpie/internal/backup"
 	"github.com/yetone/magpie/internal/browsermcp"
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/ccswitchlink"
 	"github.com/yetone/magpie/internal/claudebridge"
 	"github.com/yetone/magpie/internal/claudecode"
 	"github.com/yetone/magpie/internal/claudetui"
@@ -274,11 +275,16 @@ func Main(v string) {
 // runTUI runs the TUI, which quits on Ctrl+C and SIGTERM itself once it
 // has started; it asks CLIs first, and a signal then ends those.
 func runTUI() error {
+	// the terminal closing (SIGHUP) drains the gateway it serves first
+	defer stopGatewayOnSignal(tuiStop)()
 	return tuiRun(ownSignals)
 }
 
 // tuiRun is tui.Run; a var so tests can stand in for it.
 var tuiRun = tui.Run
+
+// tuiStop is tui.StopGateway; a var so tests can stand in for it.
+var tuiStop = tui.StopGateway
 
 // syncAgentsOnChange sets what a catalog change (a provider or group
 // saved, a vendor's list fetched anew) does: the model lists agents keep
@@ -365,6 +371,12 @@ func run(args []string) error {
 	if helpAsked(args) {
 		fmt.Println(strings.TrimRight(helpFor(args), "\n"))
 		return nil
+	}
+	// a ccswitch:// link an older magpie's claim on CC Switch's scheme
+	// handed over (Windows, Linux): CC Switch opens it and has its scheme
+	// back (ccswitchlink), and nothing here is read, moved or started
+	if len(args) > 0 && ccswitchlink.Is(args[0]) {
+		return ccswitchlink.Forward(args[0])
 	}
 	if len(args) > 0 && args[0] == "healthcheck" {
 		return healthcheck(args[1:]) // every few seconds in a container: nothing else

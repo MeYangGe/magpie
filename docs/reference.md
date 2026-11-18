@@ -477,12 +477,16 @@ words (`stop`, `tool_calls`, `end_turn`, a Responses reply's
 page shows it as Upstream stop reason.
 
 **Output speed** (tok/s on the Usage and Routing pages, `magpie usage`) is
-output tokens over the time after the first token, summed per request: the
+all output tokens the vendor counted, reasoning and tool calls included, over
+the time from the first output to the last, summed per request: the
 tokens of every timed request over the sum of their windows, so concurrent
-subagents never add up. A reply that reasoned counts only its answer, from its
-first text (`usage.DecodeOf`): hidden reasoning is written before the stream
-shows anything, so counting it in a window that starts after it read
-gpt-6.1-sol at hundreds of tok/s. A reply that reasoned and then wrote only
+subagents never add up. The first output is the earlier of the first content
+and the first sign the stream gave of reasoning (a reasoning item's or a
+thinking block's start, or reasoning deltas over 100 ms or more; a summary is
+no sign). A reply that reasoned with no sign of when counts only its answer,
+from its first text (`usage.DecodeOf`): its reasoning was written before the
+stream showed anything, so counting it in a window that starts after it read
+gpt-6.1-sol at hundreds of tok/s. Such a reply that then wrote only
 tool calls, one not streamed, and a burst (under 100 ms, or over 10,000 tok/s)
 tell no speed. So does a reply its vendor held back and let go in a burst at
 its end, however long the burst took to come: one whose content came in under
@@ -2871,6 +2875,28 @@ computer Claude Code runs on:
 `"statusLine": {"type": "command", "command": "curl -fsS -m 1 -H 'Authorization: Bearer <gateway key>' --data-binary @- http://<host>:3425/v1/magpie/statusline || true"}`.
 `magpie web` shows this command with its own address under Settings → About.
 
+Codex's TUI has a footer of the same kind from 0.171.0-alpha.12 on: a
+status line provider, a stdio MCP server whose tool says it draws one.
+`magpie statusline --codex` is that server. Codex reads it about once a
+second and passes the thread's id; it answers the model the thread's latest
+turn went to, then the account of that provider that answered last, with
+its windows, or a relay key's balance:
+`→ relay/glm-5  relay $4.20`, or `→ codex/gpt-5.5  codex me@example.com 5h 37% 7d 12%`.
+With no route it shows the account that answered last of all, and with the
+gateway not running it shows nothing. It is off until the status line square
+on Codex's row (or `magpie codex statusline on`) turns it on. That writes
+three things into `~/.codex/config.toml`: `[features] tui_extensions_statusline = true`,
+`[mcp_servers.quota_line]` running this magpie by its full path with
+`args = ["statusline", "--codex"]` and `env_vars = ["MAGPIE_ADDR"]` (Codex hands a server only a few variables of its own), and
+`[tui] status_line_provider = { server = "quota_line", tool = "statusline" }`.
+Off, or Disconnect, takes out only those, and the flag only when magpie
+wrote it. The square isn't offered while the user has a provider of their
+own picked, a `quota_line` server of their own or the flag turned off. It
+is also not offered until a Codex CLI here is 0.171.0-alpha.12 or newer:
+0.170.0 accepts the keys and draws nothing. Codex lists the server's tool
+to the model like any MCP tool's. Its name and description say only what it
+shows. The Codex app has no such footer.
+
 `magpie heap [<file>]` is for a report of magpie holding too much memory: a
 macOS `sample` of the app shows Go's frames as `???`. It asks the running
 magpie that serves the gateway (the app, the menu bar, `magpie serve` or
@@ -3586,10 +3612,12 @@ version channel first. A release marked urgent goes to Stable at once.
 When Stable moves past several versions, What's new lists the notes of
 every version since yours as one list.
 
-A version installed from the site can be newer than Stable's; the app
-keeps it and waits until Stable passes it. While it waits, the Version
-row says *Up to date on Stable*, names the newest version out on Every
-version, and offers to switch to Every version.
+A version installed from the site, or kept from Every version when the
+channel changed, can be newer than Stable's or Daily's; the app keeps it
+and waits until the channel passes it. While it waits, the Version row
+says so (*Newer than Daily's 0.1.4395; it updates once Daily passes it*),
+names the newest version out on Every version, and offers to switch to
+Every version; `magpie update` says the same.
 
 The site's downloads offer Stable's version beside the newest
 (`usemagpie.ai/download/stable/<platform>`). A fresh install of it (no
@@ -3828,8 +3856,11 @@ expose it publicly without gateway-key authentication.
 
 Such a page is in **gateway mode**: it shows Sessions, Library, Providers,
 Routing, Gateway, Usage, Masking, Plugins and Settings, with no Agents tab.
-The Library has its MCP servers alone, with the MCP router: other
-computers' apps connect at the router's address with a gateway key.
+The Library has its MCP servers, with the MCP router: other
+computers' apps connect at the router's address with a gateway key. Its
+Skills and Instructions are there too, for a magpie on another computer
+that adds this one as an "Another computer's magpie" provider with Use its skills and
+prompts on: that magpie takes them and gives them to its own agents.
 Sessions lists only the sessions of other computers' agents that came
 through this gateway, never this machine's agents' session files
 ([gateway sessions](subsystems/gateway-sessions.md)). Settings leaves out what is written into this machine's agents (provider in
