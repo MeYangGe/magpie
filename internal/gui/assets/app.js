@@ -3902,7 +3902,9 @@ function openAgentMenu(anchor, a, inFold, at) {
   // coolmantou, lileo0668
   // Codex's desktop app, by the setting Open Codex with (Yink88564391 on
   // X): in the menu, not on the row, so the row lines up with the others
-  const app = a.openApp && mode != "panel" && !web, o = a.terminal && mode != "panel" && !web, term = [...app ? [{ name: "Open the Codex app", icon: LAUNCH_GLYPH, sep: !0, run: () => api("agents/open", { agent: a.id }).catch(statusErr) }] : [], ...o ? [{ name: "Open in terminal", icon: LAUNCH_GLYPH, sep: !app, run: () => api("agents/open", { agent: a.id, terminal: !0 }).catch(statusErr) }] : [], ...a.command ? [{ name: "Copy launch command", icon: COPY_ICON, sep: !o && !app, run: () => copy(a.command, t("Launch command")) }] : []];
+  const app = a.openApp && mode != "panel" && !web, o = a.terminal && mode != "panel" && !web, term = [...app ? [{ name: "Open the Codex app", icon: LAUNCH_GLYPH, sep: !0, run: () => api("agents/open", { agent: a.id }).catch(statusErr) }] : [], ...o ? [{ name: "Open in terminal", icon: LAUNCH_GLYPH, sep: !app, run: () => api("agents/open", { agent: a.id, terminal: !0 }).catch(statusErr) }] : [], ...a.command ? [{ name: "Copy launch command", icon: COPY_ICON, sep: !o && !app, run: () => copy(a.command, t("Launch command")) }] : [],
+    // its whole file at hand, as CC Switch has it (InkCoalW on X)
+    ...a.path && mode != "panel" && !web ? [{ name: "Show settings file", icon: "M4.5 2.5h5l2.5 2.5v8.5h-7.5zM9.5 2.5V5H12", run: () => api("agents/reveal", { agent: a.id }).catch(statusErr) }] : []];
   const acts = inFold && isHidden(a)
     ? [{ name: "Show", icon: EYE, run: () => setAgentHidden(a, false) }]
     : inFold
@@ -7618,9 +7620,19 @@ function markNewPartners() {
 let newPartnerTiles = null;
 const newPartnerDotsIn = new Set();
 
-// a partner's row: its own section says it is sponsored, so no badge
+// a partner's row: its own section says it is sponsored, so no badge; its
+// tagline goes on a quiet line under the name, where it is read, not only
+// in the title (yetone: 上 A 方案)
 function partnerTile(pr) {
   const b = tile({ ...pr, sponsored: false, note: "" });
+  const note = partnerNote(pr);
+  if (note) {
+    const n = b.querySelector(".nm .n");
+    const col = el("span", "col");
+    n.replaceWith(col);
+    col.append(n, el("span", "sub", note));
+    b.classList.add("two");
+  }
   if (!pr.added) {
     const open = b.onclick;
     b.onclick = (e) => { newPartnerTiles?.delete(pr.id); countPartner("opened", [pr.id]); open(e); };
@@ -9776,6 +9788,7 @@ function drawEditor(p, presetID) {
     ed.append(...field(t("Models"), renderModels(p), pluginFilterNote(subOf(a.agent))));
     if (p.drawIds?.length) ed.append(...renderDrawers(p));
     if (p.filmIds?.length) ed.append(...renderVideomakers(p));
+    ed.append(...retrievalRows(p));
     // the subscription's own warm-up, check-in and resets first
     // and Advanced opened when one is on, as for Routing: the user who set
     // a warm-up finds it where it went (ChrisYagao on X: "我的预热去哪里了")
@@ -10305,6 +10318,7 @@ function drawEditor(p, presetID) {
   else if (pr?.id === "azure") ed.append(...field(t("Models"), el("div", "hint azure-models", t("No need to type them: once added, magpie lists the deployments this key can call. Type a deployment's name as a model id only if that list can't be fetched.")), ""));
   if (p?.drawIds?.length) ed.append(...renderDrawers(p));
   if (p?.filmIds?.length) ed.append(...renderVideomakers(p));
+  ed.append(...retrievalRows(p));
   {
     // the window agents are told a model has, over what the vendor or
     // models.dev says: one for all of them, and model=size for one
@@ -12376,6 +12390,18 @@ function renderDrawers(p) {
 // renderVideomakers: its video models, ticked to be offered (axelburks on Discord)
 function renderVideomakers(p) {
   return field(t("Video models"), mediaChips("mchips videomakers", p.filmIds, "hiddenVideomakers", p), t("Only the ticked ones are offered when making a video. Agents don't chat with these, so they aren't among its models."));
+}
+
+// retrievalRows: its embedding and rerank models, which need no pick and
+// aren't among its models since agents don't chat with them: they were
+// nowhere to be seen (@rfiacne on X)
+function retrievalRows(p) {
+  return [["Embedding models", p?.embedIds], ["Rerank models", p?.rerankIds]].flatMap(([l, v]) => {
+    if (!v) return [];
+    const d = el("div", "mchips still");
+    d.append(...v.map((id) => el("span", "mchip", id)));
+    return field(t(l), d);
+  });
 }
 
 function mediaChips(cls, ids, key, p, names) {
@@ -15214,7 +15240,7 @@ function renderKeyAccounts(p) {
     // one the gateway passes over after a failure: why, and until when, on
     // a line of its own under the key's, so the row's controls stay in reach
     let restLine = null;
-    if (k.rest && new Date(k.rest.until) > Date.now()) {
+    if (restShown(k.rest)) {
       restLine = restLineOf(k.rest, "", t("The gateway passes this key over until then, and tries the next one"), k.name || k.masked, () => { k.rest = null; });
       row.classList.add("resting");
     }
@@ -15392,7 +15418,7 @@ function keyFold(p) {
 function keyMatches(k, q) {
   const words = String(q || "").toLowerCase().split(/\s+/).filter(Boolean);
   if (!words.length) return true;
-  const resting = k.rest && new Date(k.rest.until) > Date.now();
+  const resting = k.rest && !k.rest.notice && new Date(k.rest.until) > Date.now();
   const text = [k.name, k.masked, k.on ? "" : "off " + t("turned off"),
     resting ? "resting " + t("resting") + " " + keyFail(k.rest) + " " + t(keyFail(k.rest)) + " " + (k.rest.status || "") : ""].join(" ").toLowerCase();
   return words.every((w) => text.includes(w));
@@ -15400,7 +15426,7 @@ function keyMatches(k, q) {
 // keyDead: a key the gateway is passing over for good reason, not a rate
 // limit that ends by itself: its sign-in refused, or its credit gone
 function keyDead(k) {
-  return !!k.rest && (k.rest.why === "auth" || k.rest.why === "credit") && new Date(k.rest.until) > Date.now();
+  return !!k.rest && !k.rest.notice && (k.rest.why === "auth" || k.rest.why === "credit") && new Date(k.rest.until) > Date.now();
 }
 // keyFoldRows: under the rows a folded list shows, All N keys; opened,
 // above them the filter and removing many at once, and under them how many
@@ -15480,11 +15506,18 @@ function splitKeys(text) {
   }
   return out;
 }
-// a rest's line: why, till when, the vendor's words, Try now (#1869)
+// restShown: a rest in force, or a rate limit or quota whose rest ended
+// before the limit did (r.notice, gateway.LimitNotice, @eachg0 on X):
+// shown till the time the vendor named, or, with none, till the gateway
+// drops it once the account or key answers again
+const restShown = (r) => !!r && (r.notice && !(Date.parse(r.until) > 0) || new Date(r.until) > Date.now());
+// a rest's line: why, till when, the vendor's words, Try now (#1869). A
+// notice says when the limit resets, or since when, and has no Try now:
+// nothing rests
 function restLineOf(r, model, title, name, lifted) {
-  const why = (r.status ? r.status + " " : "") + t(keyFail(r)), time = restBack(r.until);
-  const s = el("span", "key-rest", (model ? t("{model} resting · {why} · back at {time}", { model, why, time }) : t("Resting · {why} · back at {time}", { why, time })) + (r.probed ? " · " + t("checked in the background, back as soon as it answers") : ""));
-  s.title = title;
+  const e = Date.parse(r.until) > 0, why = (r.status ? r.status + " " : "") + t(keyFail(r)), time = restBack(r.notice && !e ? r.at : r.until);
+  const s = el("span", "key-rest", r.notice ? (model ? model + " " : "") + t(e ? "{why} · resets at {time}" : "{why} since {time}", { why, time }) : (model ? t("{model} resting · {why} · back at {time}", { model, why, time }) : t("Resting · {why} · back at {time}", { why, time })) + (r.probed ? " · " + t("checked in the background, back as soon as it answers") : ""));
+  s.title = r.notice ? t(e ? "The gateway asks it again; this shows until the limit resets" : "The gateway asks it again; this shows until a request on it is answered") : title;
   const go = el("button", "text key-unrest", t("Try now"));
   go.title = t("Ends the rest: the next request asks it again. Refused again, it rests again.");
   go.onclick = async (e) => {
@@ -15500,13 +15533,13 @@ function restLineOf(r, model, title, name, lifted) {
   const line = el("div", "key-rest-line");
   line.append(s);
   if (r.error) line.append(Object.assign(el("span", "key-rest-said", r.error), { title: r.error }));
-  line.append(go);
+  if (!r.notice) line.append(go);
   return line;
 }
 
 const accountRestLines = (p, user) => {
   const u = String(user).toLowerCase(), rs = p.accountRests?.[u] || [];
-  return rs.filter((r) => new Date(r.until) > Date.now()).map((r) => restLineOf(r, r.model, r.model ? t("Until then {model} goes to another account; its other models are used as before", { model: r.model }) : t("The gateway passes this account over until then, and tries the next one"), r.model ? r.model + " · " + user : user, () => p.accountRests[u] = rs.filter((x) => x !== r)));
+  return rs.filter(restShown).map((r) => restLineOf(r, r.model, r.model ? t("Until then {model} goes to another account; its other models are used as before", { model: r.model }) : t("The gateway passes this account over until then, and tries the next one"), r.model ? r.model + " · " + user : user, () => p.accountRests[u] = rs.filter((x) => x !== r)));
 };
 
 // a key's rest, worded as the Routing page words a failure

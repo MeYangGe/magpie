@@ -699,7 +699,7 @@ func planFallbackGroup(g provider.Group, ms []provider.Member, from provider.Pro
 // too, within its own order (#2255), before g's Sink orders the whole.
 // A member's fallbacks are not the group's.
 func (s *Server) planGroup(g provider.Group, ms []provider.Member, from provider.Protocol) ([]candidate, planned) {
-	var pl planned
+	pl := planned{routing: g.Routing, grouped: true}
 	var asides []candidate
 	var wAsides []Weighed
 	out := planLevel(g, ms, 0, from, &pl, &asides, &wAsides, nil)
@@ -1631,6 +1631,11 @@ func liftedLocked(key string, now time.Time) {
 		}
 	}
 	restingUntil.lifted[key] = now
+	// the limit it was shown for is over too (limit_notice.go): written
+	// by saveDropped once the lock is let go
+	if dropNotice(key) {
+		noticesDropped.Store(true)
+	}
 }
 
 // liftedRests is when each rest lifted before its time was lifted, by
@@ -2789,6 +2794,11 @@ type holdWriter struct {
 	// one in the same stream (refusalHandover); handedOver says it was
 	over       *refusalHandover
 	handedOver bool
+
+	// retold is how the vendor's error the try wrote is told to the
+	// agent (retell): the held bytes keep magpie's reading of it, which
+	// the rest, the rate hold and the retired model are read from
+	retold []retelling
 }
 
 // onLoop sets what is told of a loop before it ends the reply (reask),
@@ -2936,7 +2946,10 @@ func (h *holdWriter) Write(b []byte) (int, error) {
 	}
 	if h.passing {
 		h.sent(b)
-		return h.w.Write(b)
+		if n, err := h.w.Write(retell(h.retold, b)); err != nil {
+			return n, err
+		}
+		return len(b), nil
 	}
 	n, err := h.held.Write(b)
 	if h.stream && h.failure == 0 {
@@ -3734,7 +3747,7 @@ func (h *holdWriter) release() {
 			streamError(h.w, h.alive.proto, h.alive.model, h.failure, who+" "+h.failMsg)
 		case h.status >= 400:
 			// an error status, once the agent has a stream: told as its error
-			streamError(h.w, h.alive.proto, h.alive.model, h.status, provider.APIError(h.held.Bytes(), http.StatusText(h.status)))
+			streamError(h.w, h.alive.proto, h.alive.model, h.status, retellText(h.retold, provider.APIError(h.held.Bytes(), http.StatusText(h.status))))
 		default:
 			// a reply given whole by a vendor that ignored stream:true,
 			// after the agent was kept alive: sent as the stream it asked
@@ -3744,7 +3757,7 @@ func (h *holdWriter) release() {
 		return
 	}
 	h.pass()
-	h.w.Write(h.held.Bytes())
+	h.w.Write(retell(h.retold, h.held.Bytes()))
 	h.flush()
 }
 

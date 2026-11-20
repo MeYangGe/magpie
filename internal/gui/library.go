@@ -164,6 +164,9 @@ func revealable(v *library.View) []string {
 	for _, s := range v.FoundSkills {
 		out = append(out, s.Link, s.Shared)
 	}
+	for _, h := range v.FoundHooks {
+		out = append(out, h.File)
+	}
 	for _, s := range v.Subagents {
 		// the file it is kept in, to edit it in
 		if s.Path != "" {
@@ -786,6 +789,9 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 		case "servers/hub-tools":
 			// every tool given whole, not on demand (settings.RouterAllTools)
 			err = settings.SetRouterAllTools(in.On)
+		case "servers/hub-code":
+			// the router's run_code (settings.RouterNoCode)
+			err = settings.SetRouterNoCode(!in.On)
 		case "servers/hub-open":
 			// the hub added to another app through its install link,
 			// built here: the page names the app, never the link
@@ -833,6 +839,13 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			res, err = library.RemoveHooks([]string{in.Name})
 		case "hooks/remove-all":
 			res, err = library.RemoveHooks(in.Names)
+		case "hooks/import":
+			// hooks the agents run that magpie didn't give them, by
+			// their keys (@InkCoalW on X)
+			res, err = library.ImportHooks(in.Names)
+		case "hooks/remove-found":
+			// out of the agents' own files, each copied to the backups first
+			res, err = library.RemoveFoundHooks(in.Names)
 		case "plugins/install":
 			res, err = library.InstallPlugins(in.Source, in.Names, in.Agents)
 		case "plugins/agents":
