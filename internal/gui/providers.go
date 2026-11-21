@@ -21,6 +21,7 @@ import (
 	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/autostart"
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/egress"
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/library"
 	"github.com/yetone/magpie/internal/plugin"
@@ -541,6 +542,10 @@ type providerJSON struct {
 	// chooses that isn't on this computer: its requests fail until another
 	// is picked, as a missing proxy never means a direct connection.
 	ProxyGone string `json:"proxyGone,omitempty"`
+	// Egress is where the Claude subscription's accounts' way out to the
+	// internet is (internal/egress): the worst of their proxies' lookups,
+	// set on the Claude row when it has accounts.
+	Egress *egress.Result `json:"egress,omitempty"`
 	// a subscription account's rests in force, by its user in lower case:
 	// its own and each of its models' (maxleebeta on Discord: WorkBuddy's
 	// 429 "将在 … 重置" rested a model, credits left, and nothing here said so)
@@ -882,6 +887,9 @@ type providersJSON struct {
 	// Moved is the agents the change moved off models it stopped serving
 	// (agent.Reseat), for the page to say so.
 	Moved []agent.Move `json:"moved,omitempty"`
+	// Placed names the region of its preset a provider saved was moved to,
+	// its key refused where it was and taken there (MoveToKeyPlace).
+	Placed string `json:"placed,omitempty"`
 	// Added and Had: of the keys pasted at once (keys/import), how many
 	// were new and how many the provider had already.
 	Added int `json:"added,omitempty"`
@@ -1094,6 +1102,12 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 	out.Key.Set = p.Key != ""
 	out.Key.Masked = provider.Mask(p.Key)
 	out.ProxyGone = provider.ProxyGone(p)
+	if p.ID == "claude" {
+		if cs := provider.ClaudeProxies(); len(cs) > 0 {
+			r := egress.Worst(cs)
+			out.Egress = &r
+		}
+	}
 	if provider.BuiltinRetired(p.ID) {
 		// only its plugin's row is listed now: built-in accounts not moved
 		// yet are providersJSON.Unmoved's
@@ -2232,6 +2246,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		}
 		var moved []agent.Move
 		var agyMoved []provider.ImportedAccount
+		var placed string // the name of the region a saved provider was moved to, its key being that place's
 		switch r.PathValue("action") {
 		case "show":
 			// a signed-in account the user removed, back with its picks
@@ -2867,7 +2882,14 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				var wg sync.WaitGroup
 				wg.Go(func() { provider.PrefillNewKeys(ctx, had, in.ID) })
 				if old == nil || old.Key != p.Key {
-					p.Fetch(ctx)
+					if _, err := p.Fetch(ctx); err != nil {
+						// a key its vendor's other place keeps (Sidrune AI's
+						// China key at Global): the provider moves there
+						if q, at := provider.MoveToKeyPlace(ctx, *p, err); at != "" {
+							placed = at
+							q.Fetch(ctx)
+						}
+					}
 				} else if askHub {
 					provider.AskRemoteHub(ctx, in.ID)
 				}
@@ -3385,6 +3407,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		st := providersState()
 		st.Moved = moved
 		st.AgyMoved = agyMoved
+		st.Placed = placed
 		writeJSON(rw, st)
 		// the tray panel's account switch draws the kept list: a change
 		// made here is in it at once
