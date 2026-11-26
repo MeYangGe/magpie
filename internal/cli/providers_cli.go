@@ -47,9 +47,11 @@ const providerUsage = `usage:
                                           compaction=native asks the provider Codex's own compaction and hands
                                           Codex its sealed item as it came (a Responses API, a ChatGPT account,
                                           Copilot), compaction=magpie, the default, has magpie summarise
-                                          routing=smart|order|rotate|usage|pace|weight|free|fast|drain spreads requests
-                                          over its keys or accounts (fast: the one that answered fastest lately first;
-                                          drain: one until it is used up, then the next, never back to an earlier one);
+                                          routing=smart|order|rotate|usage|pace|weight|free|fast|drain|pace-drain spreads
+                                          requests over its keys or accounts (fast: the one that answered fastest lately
+                                          first; drain: one until it is used up, then the next, never back to an earlier
+                                          one; pace-drain: the one with the most left per hour until it renews, kept
+                                          until it is used up, then picked again);
                                           prompt=as-written sends Antigravity the system prompt exactly as written;
                                           prompt=default, the default, rewords the lines Google answers with a
                                           false 429 (Codex's, Claude Code's, Hermes' old persona, oh-my-pi's)
@@ -132,6 +134,10 @@ const providerUsage = `usage:
                                           key's calls at since; with --refill it is whole again each month or week;
                                           --expiring adds credit that counts through a day and is spent first
                                           (each one a grant, the soonest spent first; off takes every one off)
+  magpie provider key-balance-token <id> <key> <token|-> [user-id] | <id> <key> off
+                                          the access token (and new-api user ID) of the account an API key is of,
+                                          where the provider's balance token is another account's: that key's balance
+                                          is asked with them. - keeps the saved token; off asks it as the provider says
   magpie provider account-weight <id> [account [n|default]]
                                           a subscription account's share of the requests with routing=weight:
                                           one weighing 3 takes three for each one weighing 1 takes (default 1)
@@ -707,6 +713,8 @@ func providerCmd(args []string) error {
 		return accountConcurrencyCmd(rest)
 	case "key-balance", "key-balances":
 		return keyBalanceCmd(rest)
+	case "key-balance-token":
+		return keyBalanceTokenCmd(rest)
 	case "spend-cap", "spend-caps":
 		return spendCapCmd(rest)
 	case "key-rate", "key-rates":
@@ -1547,7 +1555,7 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 				// price, so there is nothing to weigh; expiring weighs
 				// several subscriptions' free quota, a group's members; fit
 				// weighs models' windows, and a provider's serve one
-				return fmt.Errorf("routing=%s is a group's: a provider's keys or accounts are routed smart, order, rotate, usage, pace, weight, free, fast or drain", r)
+				return fmt.Errorf("routing=%s is a group's: a provider's keys or accounts are routed smart, order, rotate, usage, pace, weight, free, fast, drain or pace-drain", r)
 			}
 			p.Routing = r
 		case "icon":
