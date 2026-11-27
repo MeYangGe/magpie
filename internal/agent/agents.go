@@ -1964,6 +1964,7 @@ func cursor(home string) *Agent {
 		// of the CLI: cli-config.json or the cursor-agent command does
 		// (@G_Z_Y on X saw a Cursor row that wasn't the CLI)
 		dirShared: true,
+		synced:    cursorSynced,
 		Fields: []Field{{
 			Key: "model", Label: "model",
 			Get: jsonGet(path, "model.modelId"),
@@ -2010,7 +2011,10 @@ func copilot(home, cfg string) *Agent {
 		}
 		return out
 	}
-	return &Agent{
+	get := jsonGet(path, "model")
+	joined := func() bool { return len(copilotProvider(provs)) != 0 }
+	drop := func() error { return copilotUnwrite(provs) }
+	return atomic(&Agent{
 		ID: "copilot", Name: "Copilot CLI", Icon: "githubcopilot", Aliases: []string{"gh-copilot"},
 		UA:  []string{"copilot", "github-copilot"},
 		Bin: "copilot", Dir: dir, Path: path,
@@ -2024,6 +2028,7 @@ func copilot(home, cfg string) *Agent {
 		// plugin's getCopilotCliHomePath): the Library's row is GitHub
 		// Copilot's, kept with VS Code or the plugin alone here
 		shared: "GitHub Copilot",
+		synced: copilotSynced,
 		sharedApp: func() bool {
 			return copilotJBInstalled(home) || vscode(home, cfg).Detected() || vscodeInsidersAgent(home, cfg).Detected()
 		},
@@ -2035,8 +2040,15 @@ func copilot(home, cfg string) *Agent {
 		// magpie/<model> is a model of the provider named magpie in providers.json
 		Spelled:  prefixed,
 		ListOnly: true,
+		Joined:   joined,
+		Unwire: func() error {
+			if !joined() || prefixed(get()) {
+				return nil
+			}
+			return drop()
+		},
 		Check: func() string {
-			if v, _ := edit.GetJSON(path, "model"); !prefixed(v) {
+			if !prefixed(get()) {
 				return ""
 			}
 			p := copilotProvider(provs)
@@ -2046,7 +2058,7 @@ func copilot(home, cfg string) *Agent {
 		Sync: func() error { return copilotSync(provs, gateway.URL()+"/v1", agentKey("copilot")) },
 		Fields: []Field{{
 			Key: "model", Label: "model",
-			Get: jsonGet(path, "model"),
+			Get: get,
 			Set: func(v string) error {
 				if ref, ok := strings.CutPrefix(v, magpieID+"/"); ok && isMagpie(ref) {
 					if err := copilotWrite(provs, gateway.URL()+"/v1", agentKey("copilot")); err != nil {
@@ -2054,10 +2066,12 @@ func copilot(home, cfg string) *Agent {
 					}
 				}
 				if v == "" {
-					if err := edit.DelJSON(path, "model"); err != nil {
-						return err
+					if prefixed(get()) {
+						if err := edit.DelJSON(path, "model"); err != nil {
+							return err
+						}
 					}
-					return copilotUnwrite(provs)
+					return drop()
 				}
 				return edit.SetJSON(path, edit.KV{Path: "model", Value: v})
 			},
@@ -2080,7 +2094,7 @@ func copilot(home, cfg string) *Agent {
 				return static("low", "medium", "high", "xhigh")
 			},
 		}},
-	}
+	}, path, provs)
 }
 
 // editorLauncher reports whether bin is a launcher an editor ships beside
