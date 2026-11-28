@@ -9206,7 +9206,7 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to 
 					r := *req
 					r.OffLevel, req = l, &r
 				}
-			} else if e := fitEffort(req.Effort, levels); slices.Contains(gemini3Levels, req.Effort) && e != req.Effort {
+			} else if e := fitEffort(req.Effort, levels); (slices.Contains(gemini4Levels, req.Effort) || req.Effort == "max") && e != req.Effort {
 				r := *req
 				r.Effort, req = e, &r
 			}
@@ -10983,7 +10983,7 @@ func encoder(proto provider.Protocol, w *sseWriter, r *Request, usage ...*Usage)
 	// a model's whole floats in a call's arguments reach the client as
 	// integers (grok_integral.go, #1431, #3152), outside usageEncoder,
 	// which reads its encoder's reply id
-	enc = &wholeEncoder{streamEncoder: enc}
+	enc = &wholeEncoder{streamEncoder: enc, named: r.Namespaced}
 	if len(r.Free) > 0 {
 		// a Gemini model's objects of any fields, which it was asked for
 		// as JSON text, read back (gemini_free_objects.go, #7363); past
@@ -11020,7 +11020,7 @@ func render(proto provider.Protocol, res Result, r *Request) []byte {
 	model := r.Model
 	// a model's whole floats in a call's arguments reach the client as
 	// integers (grok_integral.go, #1431, #3152)
-	res = wholeResult(res)
+	res = wholeResult(res, r.Namespaced)
 	// a call naming no function reaches no client (nameless_calls.go, #7565)
 	res = namelessResult(res)
 	if r.CR {
@@ -11713,8 +11713,8 @@ func onEffort(p provider.Provider, model string) string {
 
 // geminiLevels are the thinking levels model is asked at on Gemini's
 // OpenAI-compatible API, less those it turned away before (turnedAway):
-// its own, or Gemini 3's where they aren't known or none of its own is
-// left.
+// its own, or Gemini 3's / Gemini 4's where they aren't known or none of
+// its own is left.
 func (s *Server) geminiLevels(p provider.Provider, model string, to provider.Protocol) []string {
 	left := func(levels []string) []string {
 		return slices.DeleteFunc(slices.Clone(levels), func(l string) bool {
@@ -11723,6 +11723,9 @@ func (s *Server) geminiLevels(p provider.Provider, model string, to provider.Pro
 	}
 	if levels := left(p.Efforts(model)); len(levels) > 0 {
 		return levels
+	}
+	if geminiGeneration(strings.ToLower(model)) >= 4 {
+		return left(gemini4Levels)
 	}
 	return left(gemini3Levels)
 }
@@ -12240,17 +12243,23 @@ func writeErrorAs(w http.ResponseWriter, proto provider.Protocol, status int, ty
 	case provider.Anthropic:
 		v = map[string]any{"type": "error", "error": map[string]any{"type": typ, "message": msg}}
 	case provider.Gemini:
-		st := map[int]string{400: "INVALID_ARGUMENT", 408: "DEADLINE_EXCEEDED", 413: "INVALID_ARGUMENT", 401: "UNAUTHENTICATED", 403: "PERMISSION_DENIED", 404: "NOT_FOUND",
-			429: "RESOURCE_EXHAUSTED", 500: "INTERNAL", 502: "UNAVAILABLE", 503: "UNAVAILABLE", 529: "UNAVAILABLE"}[status]
-		if st == "" {
-			st = "UNKNOWN"
-		}
-		v = map[string]any{"error": map[string]any{"code": status, "message": msg, "status": st}}
+		v = map[string]any{"error": map[string]any{"code": status, "message": msg, "status": geminiStatus(status)}}
 	default:
 		v = map[string]any{"error": map[string]any{"message": msg, "type": typ, "code": code, "param": param}}
 	}
 	writeJSON(w, status, v)
 	return status
+}
+
+// geminiStatus is the google.rpc.Code status a Gemini client is told an
+// HTTP code's error with, as Google's HTTP mapping gives it: ABORTED for
+// 409, which ALREADY_EXISTS shares, INVALID_ARGUMENT for 422, which no
+// status has, and "UNKNOWN" for a code it doesn't map.
+func geminiStatus(code int) string {
+	return cmp.Or(map[int]string{400: "INVALID_ARGUMENT", 401: "UNAUTHENTICATED", 403: "PERMISSION_DENIED", 404: "NOT_FOUND",
+		408: "DEADLINE_EXCEEDED", 409: "ABORTED", 413: "INVALID_ARGUMENT", 422: "INVALID_ARGUMENT", 429: "RESOURCE_EXHAUSTED",
+		499: "CANCELLED", 500: "INTERNAL", 501: "UNIMPLEMENTED", 502: "UNAVAILABLE", 503: "UNAVAILABLE", 504: "DEADLINE_EXCEEDED",
+		529: "UNAVAILABLE"}[code], "UNKNOWN")
 }
 
 // tooLongRe matches how vendors say a request is more than the model's
