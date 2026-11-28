@@ -162,7 +162,17 @@ var errLeftAlone = errors.New("not read yet: this subscription is switched off i
 // Kunlin03 on X: a Claude Pro account with the Claude Code switch off).
 // LoginUsage itself stays empty for it: warm-ups and switching read it and
 // must not take a kept reading for a fresh one.
+//
+// A ChatGPT API account that is the same ChatGPT account as a Codex one
+// shows that Codex account's reading (samePlanReadings, tmr11235 on X).
 func LoginUsageShown(ctx context.Context, agent string) map[string]SubscriptionQuota {
+	if agent == ChatGPTAPIID {
+		return samePlanReadings(ctx, loginUsageShown(ctx, agent))
+	}
+	return loginUsageShown(ctx, agent)
+}
+
+func loginUsageShown(ctx context.Context, agent string) map[string]SubscriptionQuota {
 	if !settings.AccountDiscoveryOff() && leftAlone(agent) {
 		if logins, ok := usageLogins(agent); ok {
 			return keptLoginUsage(logins)
@@ -234,6 +244,10 @@ func loginUsageOf(ctx context.Context, agent string, only map[string]bool) (map[
 	}
 	out := map[string]SubscriptionQuota{}
 	logins, ok := usageLogins(agent)
+	switching := isAgySwitchReading(ctx)
+	if pp, isPlugin := pluginOfAgent(agent); switching && isPlugin && pp.ID == agyCLIID {
+		logins, ok = pluginAskableLogins(pp), true
+	}
 	if !ok {
 		return out, asked, states
 	}
@@ -259,7 +273,8 @@ func loginUsageOf(ctx context.Context, agent string, only map[string]bool) (map[
 	}
 	wg.Wait()
 	usageRead(agent, out) // a window not started: the warm-up looks now
-	if len(out) > 0 {
+	// Switch automatically's reading is its own: no quota history shows it
+	if len(out) > 0 && !switching {
 		// the batch's readings are points of each account's quota history
 		// too, as a Usage-page reading is: a magpie only ever serving
 		// other magpies has nobody on its Usage page, and its quota
@@ -459,15 +474,16 @@ func loginQuota(ctx context.Context, l Login) SubscriptionQuota {
 	}
 	if l.Agent == ChatGPTAPIID {
 		// a ChatGPT plan through OpenAI's API (chatgpt_api.go): OpenAI
-		// tells its usage nowhere magpie can ask, only at SIWCUsageURL, so
-		// its row says so and what does show it, the account added as
-		// ChatGPT (danzi002 on Discord: accounts added through the API
-		// show no allowance, ones signed in as ChatGPT do). It used to be
-		// read below as a Codex account: a saved one said "chatgpt-api
-		// accounts can't be used side by side", the one in use read
-		// Codex's own sign-in ("Codex is signed out; run codex login", or
-		// another account's allowance under its name).
-		return SubscriptionQuota{Provider: l.Agent, Plan: l.Plan, Windows: []QuotaWindow{}, Error: siwcNoUsage, SeeAt: SIWCUsageURL}
+		// tells its usage nowhere for the account itself, only at
+		// SIWCUsageURL, so it is read with the Codex sign-in of the same
+		// ChatGPT account (siwcQuota, tmr11235 on X), or its row says
+		// where to look (danzi002 on Discord: accounts added through the
+		// API showed no allowance). It used to be read below as a Codex
+		// account: a saved one said "chatgpt-api accounts can't be used
+		// side by side", the one in use read Codex's own sign-in ("Codex
+		// is signed out; run codex login", or another account's
+		// allowance under its name).
+		return siwcQuota(ctx, l)
 	}
 	if l.Agent == "copilot" {
 		for _, c := range copilotLogins(copilotConfigDir()) {

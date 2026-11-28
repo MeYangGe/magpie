@@ -1074,7 +1074,7 @@ func syncedProviders(ps []provider.Provider) []provider.Provider {
 	ps = slices.Clone(ps)
 	for i := range ps {
 		ps[i].KeepLogin, ps[i].KeepLoginAs, ps[i].SwitchOnly, ps[i].RestartApp = false, "", false, false
-		ps[i].KeepSelf = false
+		ps[i].KeepSelf, ps[i].AutoSwitch = false, false
 	}
 	return ps
 }
@@ -1206,6 +1206,7 @@ func take(to *backup.Bundle, from backup.Bundle, part string) {
 			copy.LANKey, copy.LANKeyID = to.Settings.LANKey, to.Settings.LANKeyID
 			copy.GitHubToken = to.Settings.GitHubToken
 			copy.BarkKey = to.Settings.BarkKey
+			copy.TelegramToken, copy.TelegramChat, copy.DiscordWebhook = to.Settings.TelegramToken, to.Settings.TelegramChat, to.Settings.DiscordWebhook
 			copy.OTel.Headers = nil
 			if strings.TrimRight(strings.TrimSpace(copy.OTel.Endpoint), "/") == to.Settings.OTel.Endpoint {
 				copy.OTel.Headers = to.Settings.OTel.Headers

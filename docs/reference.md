@@ -169,7 +169,7 @@ line; agents connected to magpie lose it when it quits.
 | NewMax       | `newmax.db` (SQLite, the row `app` of its `settings` table) in `$NEWMAX_USER_DATA_DIR`, else `~/.newmax` (every OS) | provider (a `magpie-gateway` entry in its `providers` and `providerOrder`, magpie's models in its model picker; the rest of the row kept byte for byte; refused while NewMax runs, as it writes its settings back whenever one changes) |
 | LiveAgent    | `config.json` (JSONC, K-brain's) in `$LIVEAGENT_HOME`, else `$K_BRAIN_HOME`, else the folder `~/.liveagent/data-dir.json` points to, else `~/.liveagent` (every OS) | provider (`magpie`, `magpie-responses` and `magpie-anthropic` entries in its `providers`, each model on the one of the API it is served on natively: Chat Completions and Responses at the gateway's `/v1` as OpenAI providers whose request format the user can switch in LiveAgent and magpie keeps, Anthropic Messages at its root; magpie's models in its model picker; a model or provider of magpie's deleted in LiveAgent stays out; a default still K-brain's own demo model becomes magpie's first; refused while LiveAgent or its `k-brain` backend runs, as it writes its settings back whenever one changes) |
 | T3 Code      | `~/.t3/userdata/settings.json` (`$T3CODE_HOME/userdata`) | provider (a `magpie` provider instance on Claude Code, magpie's models as its custom models; a `magpie-codex` instance on Codex, whose `launchArgs` are Codex's own `-c` overrides to magpie and a `magpie-codex-models.json` catalog beside the settings. The harness is picked in T3's model picker) |
-| OpenMausBot  | `~/.openmausbot/config.json` (`$OMB_DATA_DIR`) | provider (a `magpie` engine in `instances`: OpenMausBot's own Claude endpoint shape, Claude Code with `ANTHROPIC_BASE_URL` at the gateway and magpie's models as its `endpointModels`, in its own `CLAUDE_CONFIG_DIR` under `providers/magpie`. With no `instances` saved, OpenMausBot's default engines are written beside it. OpenMausBot reads it when it starts) |
+| OpenMausBot  | `~/.openmausbot/config.json` (`$OMB_DATA_DIR`) | provider (a `magpie` engine in `instances`: OpenMausBot's own Claude endpoint shape, Claude Code with `ANTHROPIC_BASE_URL` at the gateway and magpie's models as its `endpointModels`, in its own `CLAUDE_CONFIG_DIR` under `providers/magpie`; with no `claude` CLI for OpenMausBot to run, OpenMausBot's own OpenAI-compatible engine instead: `openai-compat`, `url` the gateway's `/v1`, magpie's key and models as `managedModels`. With no `instances` saved, OpenMausBot's default engines are written beside it. OpenMausBot reads it when it starts) |
 | Avibe        | `~/.avibe/config/config.json` (`$AVIBE_HOME`; `~/.vibe_remote` from before 3.0), changed through its control socket `state/dispatch.sock` (Windows: `runtime/control-ipc/endpoint.json`) while it runs | provider (a `magpie` model source on its Models page: custom vendor, OpenAI chat completions at the gateway's `/v1`, with Avibe's own key; Avibe lists magpie's models from the gateway and adds the source to Vibey's, Claude Code's, Codex's and OpenCode's routes. Avibe has to be running to connect or disconnect it) |
 | Kun          | `~/.kun/data/model-connections.v2.json` (`$KUN_DATA_DIR`), changed through its runtime's admin API (`baseUrl` and `runtimeToken` of `runtime.json` in the same folder) while it runs | model (a `magpie` connection in Settings > Providers: HTTP, OpenAI chat completions at the gateway's `/v1`, with Kun's own key and the models picked for Kun; the model picked is Kun's default. Kun has to be running to connect or disconnect it) |
 | Nowledge Mem | `remote_llm.json` in its config folder (`~/Library/Application Support/co.nowledge.mem.desktop`, `%APPDATA%`, `$XDG_CONFIG_HOME`; `$NMEM_APP_CONFIG_DIR`), read only: changed through its backend's API on `127.0.0.1:14242` (`$NMEM_API_URL`) while it runs | model (Mem's own `magpie` provider at the gateway's `/v1` with Mem's own key, made its active AI and turned on; the provider and on/off Mem had come back on disconnect. Mem has to be running to connect or disconnect it) |
@@ -2566,7 +2566,7 @@ A Codex that isn't connected to magpie goes straight to OpenAI on its own
 sign-in, however many of its accounts are on: magpie only moves Codex's
 sign-in (`auth.json`) as above. Connected, a request the signed-in account
 has no allowance for goes on to the others through the gateway. *Only
-switch Codex's sign-in* under Providers › Codex (or `magpie accounts
+switch Codex's sign-in* under Providers › ChatGPT (or `magpie accounts
 switch-only codex on`) keeps Codex's requests off magpie even then
 (#1907). An `openai_base_url` you wrote yourself stays. The
 Codex app and a running `codex app-server` read the sign-in when they
@@ -2583,6 +2583,31 @@ fallback or a Claude Code connected to magpie, is refused as kept to
 Claude Code, so no turn runs through Claude Code's SDK mode, which
 spends more of the allowance than Claude Code used on its own (myduso on
 Discord). Their usage is still read and shown.
+
+*Only switch agy's sign-in* under Providers › Antigravity CLI (or
+`magpie accounts switch-only agy-cli on`) does the same for agy (#1908):
+magpie serves no request on those accounts, and using one signs agy in
+to it where agy keeps its own sign-in (the keychain on macOS, Credential
+Manager on Windows, the Secret Service or agy's token file on Linux).
+The Antigravity app (2.x) reads the same sign-in, so it moves with agy.
+The rows of agy and the Antigravity app on Agents then show the account
+and switch it, as Claude Code's does. magpie renews the account with
+Google first and keeps a copy of what agy had in `agy-keyring-backup.json`
+in magpie's folder. Quit agy and the Antigravity app first: one still
+running keeps the account it started on and writes it back over the
+switch, so magpie refuses, naming what is running, and changes nothing.
+agy started with a Gemini API key or Vertex AI in its environment isn't
+switched. The warm-up sends nothing on these accounts.
+
+Switching is by hand unless you turn on *Switch agy's account
+automatically*, shown under the tick once it is on (or `magpie accounts
+auto-switch agy-cli on`). Then, when the account agy is on has used its
+allowance, the whole account or one of its pools of models (Gemini,
+Claude & GPT), magpie signs agy in to the next account that is on and
+has room there, once agy and the app have quit; till then it waits and
+looks again every ten seconds, and a line under the switch says which
+account is used up and which agy goes to. Unticking
+*Only switch agy's sign-in* turns it off too.
 
 **Switch accounts only.** To use magpie only to switch Claude Code (or
 Codex) between your accounts, leave it not connected on Agents and sign
@@ -4125,6 +4150,7 @@ application:
     - /backend-api/codex
     - /alpha/search
     - /mcp
+    - /v0/management
     - /me
     - /deepseek-chat
     - /join

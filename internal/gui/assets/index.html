@@ -296,7 +296,7 @@
         <div id="lightweightSegs"></div>
       </div>
       <div class="row pref" id="keepAwakeRow">
-        <div class="who"><div class="name" data-t>Prevent sleep</div><div class="sub" data-t>Keeps this computer awake while magpie runs tasks</div></div>
+        <div class="who"><div class="name" data-t>Prevent sleep</div><div class="sub" data-t data-on="Keeps this computer awake while magpie runs tasks; closing the lid still puts it to sleep" data-display="Keeps this computer and its screen awake while magpie runs tasks; closing the lid still puts it to sleep">Keeps this computer awake while magpie runs tasks; closing the lid still puts it to sleep</div></div>
         <div id="keepAwakeSegs"></div>
       </div>
       <div class="row pref" id="wslAgentsRow" hidden>
@@ -421,8 +421,16 @@
         <div class="who"><div class="name" data-t>Bark</div><div class="sub" data-t>Every notification magpie shows goes here too, even while the system's notifications are off</div></div>
         <div id="barkBox" class="bark-box"></div>
       </div>
+      <div class="row pref" id="telegramRow">
+        <div class="who"><div class="name" data-t>Telegram</div></div>
+        <div id="telegramBox" class="bark-box"></div>
+      </div>
+      <div class="row pref" id="discordRow">
+        <div class="who"><div class="name" data-t>Discord</div></div>
+        <div id="discordBox" class="bark-box"></div>
+      </div>
       <div class="row pref" id="barkDailyRow" hidden>
-        <div class="who"><div class="name" data-t>Bark daily summary</div></div>
+        <div class="who"><div class="name" data-t>Daily summary</div></div>
         <div id="barkDailySegs" class="warm-at"></div>
       </div>
     </div>
@@ -603,16 +611,6 @@
     <div class="row pref warm-now" id="claudeWarmNowRow" hidden>
       <div class="who"><div class="name" data-t>Warm up now</div><div class="sub" id="claudeWarmNowSub"></div></div>
       <div id="claudeWarmNowBox"></div>
-    </div>
-  </div>
-  <div class="list prefs" id="agyWarmList" data-feature="warmups">
-    <div class="row pref">
-      <div class="who"><div class="name" data-t>Warm up on reset</div><div class="sub" id="agyWarmSub" title="Nothing is sent while the computer sleeps: a window that resets then starts when it wakes, and counts from then." data-tt></div></div>
-      <div id="agyWarmSegs"></div>
-    </div>
-    <div class="row pref warm-now" id="agyWarmNowRow" hidden>
-      <div class="who"><div class="name" data-t>Warm up now</div><div class="sub" id="agyWarmNowSub"></div></div>
-      <div id="agyWarmNowBox"></div>
     </div>
   </div>
   <div class="list prefs" id="wbList" data-feature="warmups">

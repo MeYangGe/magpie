@@ -148,6 +148,9 @@ const providerUsage = `usage:
                                           past either a request is turned away with a 429 (0: no bound)
   magpie provider rpm <id> [n|off]        how many requests each account or key sends the vendor in any minute;
                                           one more waits for room, up to 2 minutes, then is turned away with a 429
+  magpie provider first-token <id> [seconds|off]
+                                          how long a streamed reply may take to begin before the next account or key
+                                          is asked; the last is waited for (off: the group's, or none)
   magpie provider at-once <id> [n|off|default]
                                           how many of its accounts or keys take requests at the same time, the first
                                           in the list; the next takes over when one runs out or fails (off: no limit,
@@ -452,6 +455,9 @@ func models(args []string) error {
 	for _, e := range entries {
 		w = max(w, len(e.ID))
 	}
+	// turned off for every agent on the Gateway page: still served, through
+	// a routing group or a request that names it
+	off := provider.AgentsOff()
 	last := ""
 	for _, e := range entries {
 		head, name := e.Provider.ID, e.Provider.Name
@@ -468,6 +474,9 @@ func models(args []string) error {
 		}
 		if len(e.Efforts) > 0 {
 			line += faint.Render("  " + strings.Join(e.Efforts, "/"))
+		}
+		if agentID == "" && off[e.ID] {
+			line += faint.Render("  off for agents")
 		}
 		fmt.Println(line)
 	}
@@ -729,6 +738,8 @@ func providerCmd(args []string) error {
 		return queueCmd(rest)
 	case "rpm":
 		return rpmCmd(rest)
+	case "first-token":
+		return firstTokenCmd(rest)
 	case "at-once", "accounts-at-once":
 		return atOnceCmd(rest)
 	case "refresh-every":
@@ -2359,6 +2370,41 @@ func rpmCmd(rest []string) error {
 		fmt.Printf("%s · each account or key: at most %d requests a minute\n", p.Name, n)
 	} else {
 		fmt.Printf("%s · each account or key: no limit on requests a minute\n", p.Name)
+	}
+	return nil
+}
+
+// firstTokenCmd shows, or sets, how many seconds a provider's streamed
+// reply may take to begin before its next account or key is asked
+// (GoForceX on X).
+func firstTokenCmd(rest []string) error {
+	if len(rest) < 1 || len(rest) > 2 {
+		return fmt.Errorf("magpie provider first-token <id> [seconds|off]")
+	}
+	p, err := provider.Find(rest[0])
+	if err != nil {
+		return err
+	}
+	if len(rest) > 1 {
+		n := 0
+		switch s := strings.ToLower(strings.TrimSpace(rest[1])); s {
+		case "off", "none", "no", "-":
+		default:
+			if n, err = strconv.Atoi(strings.TrimSuffix(s, "s")); err != nil {
+				return fmt.Errorf("a first token's wait is a whole number of seconds, or off, not %q", rest[1])
+			}
+		}
+		if err := provider.SetFirstToken(p.ID, n); err != nil {
+			return err
+		}
+		if p, err = provider.Find(p.ID); err != nil {
+			return err
+		}
+	}
+	if p.FirstToken > 0 {
+		fmt.Printf("%s · each streamed reply: the next account or key is asked after %ds with no first token\n", p.Name, p.FirstToken)
+	} else {
+		fmt.Printf("%s · each streamed reply: no first-token wait of its own\n", p.Name)
 	}
 	return nil
 }

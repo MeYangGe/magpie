@@ -294,11 +294,29 @@ func piDirect(s *Server) []string {
 	if s.Name == HubEntry {
 		return s.direct
 	}
-	if serverKey(s) == artifactsKey {
+	return ownDirect(s)
+}
+
+// ownDirect are the tools of magpie's own server s that are declared
+// whole, never behind an agent's tool search: Artifacts' (artifactsDirect)
+// and memory_search, which agents with their tools deferred never called
+// (af3g453f on X: 304 memories in a week, no search).
+func ownDirect(s *Server) []string {
+	switch serverKey(s) {
+	case artifactsKey:
 		return artifactsDirect
+	case memoryKey:
+		return memoryDirect
 	}
 	return nil
 }
+
+// memoryKey is Magpie Memory's server as serverKey gives it, and
+// memoryDirect its tools Pi declares to its model whole (the gateway's
+// memorySearchTool, whose _meta marks it always loaded).
+const memoryKey = "magpie mcp memory"
+
+var memoryDirect = []string{"memory_search"}
 
 // piDirectBefore is whether old's toolExposure is one magpie wrote
 // before piDirect(s) grew: some of its tools, each "direct", and nothing
@@ -386,6 +404,15 @@ const (
 	// streamable HTTP and no way to name SSE (TRAE CN 2.3.105403's
 	// workbench)
 	fmtTrae
+	// fmtQwen is Qwen Code's settings.json mcpServers, Gemini CLI's shape
+	// with SSE named: httpUrl is streamable HTTP in every version, while a
+	// bare url is SSE to 0.28 and 0.29 (createTransport in
+	// packages/core/src/tools/mcp-client.ts, v0.28.7, npm's latest, and
+	// main 0011d3aa) and HTTP to 1.0, which takes SSE only with type "sse"
+	// (createUrlTransport in packages/core/src/mcp/connector/transport/
+	// url.ts, v1.0.0-preview.2; 0.28 and 0.29 ignore type). So SSE is url
+	// with type "sse", which every version reads as SSE
+	fmtQwen
 )
 
 // mcpFile is the file an agent keeps its user-wide MCP servers in.
@@ -754,6 +781,9 @@ var callKeys = map[mcpFormat]callKey{
 	// Gemini CLI's mcpServers: timeout, in milliseconds, for a call and
 	// the start alike (MCP_DEFAULT_TIMEOUT_MSEC, ten minutes, unless set)
 	fmtGemini: {key: "timeout", per: 1000},
+	// Qwen Code's is Gemini CLI's (MCPServerConfig.timeout, milliseconds,
+	// in packages/core/src/config/mcp-server-config.ts)
+	fmtQwen: {key: "timeout", per: 1000},
 	// OpenCode's mcp: timeout, in milliseconds, for a call, the start
 	// and the tool list (packages/opencode/src/mcp; v2 reads the number
 	// as all three too, config/migrate.ts migrateMcpTimeout)
@@ -920,12 +950,15 @@ func (f *mcpFile) encode(s *Server) ordered {
 			add("args", list(s.Args))
 			add("env", strs(s.Env))
 		}
-	case fmtGemini:
+	case fmtGemini, fmtQwen:
 		switch s.Transport {
 		case "http":
 			add("httpUrl", s.URL)
 			optional("headers", s.Headers)
 		case "sse":
+			if f.Format == fmtQwen {
+				add("type", "sse")
+			}
 			add("url", s.URL)
 			optional("headers", s.Headers)
 		default:
@@ -1328,7 +1361,8 @@ func (f *mcpFile) decode(name string, m map[string]any) (*Server, bool) {
 				ref(&s.Env, n, "${"+n+"}")
 			}
 		}
-	case fmtGemini:
+	case fmtGemini, fmtQwen:
+		// a url Qwen Code's type doesn't name is SSE, as 0.28 and 0.29 read it
 		if u := str(m, "httpUrl"); u != "" {
 			remote("http", u, m["headers"])
 		} else if u := str(m, "url"); u != "" {
@@ -1721,6 +1755,7 @@ var owned = map[mcpFormat][]string{
 	fmtClaude:   {"type", "url", "headers", "command", "args", "env"},
 	fmtCrush:    {"type", "url", "headers", "command", "args", "env"},
 	fmtGemini:   {"type", "httpUrl", "url", "headers", "command", "args", "env"},
+	fmtQwen:     {"type", "httpUrl", "url", "headers", "command", "args", "env"},
 	fmtOpenCode: {"type", "url", "headers", "command", "environment", "enabled"},
 	fmtCursor:   {"type", "url", "headers", "command", "args", "env"},
 	fmtCopilot:  {"type", "url", "headers", "command", "args", "env"},
@@ -2180,11 +2215,18 @@ func appOwned(s *Server, a *agent.Agent) bool {
 	if s.Remote() || a == nil {
 		return false
 	}
-	cmd := strings.ToLower(strings.ReplaceAll(s.Command, `\`, "/"))
-	if a.ID == "codex" && (strings.Contains(cmd, "/cua_node/") || strings.Contains(cmd, "/openai/codex/runtimes/")) {
+	return inAgentApp(s.Command, a.ID, a.Name)
+}
+
+// inAgentApp is whether path is inside the app install of the agent of
+// this id and name: its Mac app bundle, its Microsoft Store app, the Codex
+// app's runtimes.
+func inAgentApp(path, id, name string) bool {
+	cmd := strings.ToLower(strings.ReplaceAll(path, `\`, "/"))
+	if id == "codex" && (strings.Contains(cmd, "/cua_node/") || strings.Contains(cmd, "/openai/codex/runtimes/")) {
 		return true
 	}
-	names := []string{strings.ToLower(a.ID), strings.ToLower(a.Name)}
+	names := []string{strings.ToLower(id), strings.ToLower(name)}
 	if id, _, ok := strings.Cut(names[0], "-"); ok {
 		names = append(names, id)
 	}

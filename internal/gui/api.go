@@ -617,6 +617,10 @@ type settingsJSON struct {
 	GitHubTokenRefused bool `json:"githubTokenRefused,omitempty"`
 	// whether a Bark device key is set; never the key (EV_John_Liu on X)
 	BarkKeySet bool `json:"barkKeySet,omitempty"`
+	// whether a Telegram bot's token and a Discord webhook are set; never
+	// either (gandli on X)
+	TelegramSet bool `json:"telegramSet,omitempty"`
+	DiscordSet  bool `json:"discordSet,omitempty"`
 	// where other machines reach the gateway while it is shared
 	LANURLs []string `json:"lanURLs,omitempty"`
 	// LANURLs are a container's own addresses, not the host's: the page
@@ -642,10 +646,6 @@ type settingsJSON struct {
 	CodexUsers []string `json:"codexUsers,omitempty"`
 	// and the Claude accounts, which Warm up now picks from
 	ClaudeUsers []string `json:"claudeUsers,omitempty"`
-	// and the agy CLI's: when its warm-up last started a pool's window,
-	// and the accounts Warm up now picks from
-	AgyWarmed *time.Time `json:"agyWarmed,omitempty"`
-	AgyUsers  []string   `json:"agyUsers,omitempty"`
 	// the Codexes here that kept the background compaction's table (and
 	// its share) out of the config at the last sync: too old for it
 	// (before 0.163.0-alpha.8), or of no known version (codex_async.go)
@@ -923,6 +923,8 @@ func settingsState() settingsJSON {
 	s.GatewayPaused = pausedNow()
 	s.LANKey = "" // the retained credential belongs on disk, not in UI state
 	s.BarkKeySet, s.BarkKey = strings.TrimSpace(s.BarkKey) != "", ""
+	s.TelegramSet, s.TelegramToken = strings.TrimSpace(s.TelegramToken) != "", ""
+	s.DiscordSet, s.DiscordWebhook = strings.TrimSpace(s.DiscordWebhook) != "", ""
 	// the GitHub token, masked, and where the library's requests take one
 	// from: Settings, or the environment variable named
 	own := strings.TrimSpace(s.GitHubToken)
@@ -962,7 +964,6 @@ func settingsState() settingsJSON {
 	}
 	s.CodexWarmed, s.ClaudeWarmed = latest(provider.CodexWarmed()), latest(provider.ClaudeWarmed())
 	s.CodexUsers, s.ClaudeUsers = loginUsers("codex"), loginUsers("claude")
-	s.AgyWarmed, s.AgyUsers = latest(provider.AgyWarmed()), loginUsers("agy-cli")
 	s.CodexAsyncHeld = agent.CodexAsyncHeld()
 	s.CodexCompactKeys = codexKeysText(agent.CodexCompactHeld(""))
 	s.ClaudeCache = claudeCacheState()
@@ -976,7 +977,10 @@ func settingsState() settingsJSON {
 	s.CheckinAccounts = provider.CheckinAccounts()
 	s.VisionAuto, s.VisionModels, s.VisionMissing = gateway.AutoVision(), []modelRef{}, gateway.VisionMissing()
 	s.VisionEfforts, s.VisionEffortNow = gateway.VisionEfforts(), gateway.VisionEffortNow()
-	for _, e := range provider.Served() {
+	// the pickers below offer each provider's models the newest first
+	// (elis_pina on X)
+	newest := provider.NewestFirst(provider.Served())
+	for _, e := range newest {
 		if e.Images && (e.ImageInput == nil || *e.ImageInput) && (e.Group != "" || e.Provider.Ready()) {
 			m := modelRef{ID: e.ID, Name: e.Name, Provider: e.Provider.ID, PName: e.Provider.Name, Icon: e.Provider.Icon}
 			if e.Group != "" {
@@ -1006,7 +1010,7 @@ func settingsState() settingsJSON {
 		}
 		s.DisabledHits[pat] = provider.DisabledHits(pat)
 	}
-	for _, e := range provider.Served() {
+	for _, e := range newest {
 		if e.Group != "" || e.Provider.Ready() && !e.Provider.DecideOnly() {
 			m := modelRef{ID: e.ID, Name: e.Name, Provider: e.Provider.ID, PName: e.Provider.Name, Icon: e.Provider.Icon}
 			if e.Group != "" {
@@ -1026,7 +1030,7 @@ func settingsState() settingsJSON {
 		}
 		// those unticked in its editor left out, but the one picked here
 		// (321sssrt on X): a hidden pick still draws, and shows as picked
-		for _, m := range gateway.Drawers(p) {
+		for _, m := range catalog.NewestFirst(gateway.Drawers(p)) {
 			if p.DrawerHidden(m.ID) && gateway.ListedDrawer(s.ImageGen) != p.ID+"/"+m.ID {
 				continue
 			}
@@ -1063,7 +1067,7 @@ func settingsState() settingsJSON {
 			continue
 		}
 		// one unticked in its editor is left out, but the one picked here
-		for _, m := range gateway.Videomakers(p) {
+		for _, m := range catalog.NewestFirst(gateway.Videomakers(p)) {
 			if p.VideomakerHidden(m.ID) && s.VideoGen != p.ID+"/"+m.ID {
 				continue
 			}
@@ -1242,6 +1246,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	}
 	mux := http.NewServeMux()
 	page := devPage(revalidated(http.FileServer(http.FS(staticFS()))))
+	markRoutes(mux, page)
 	mux.Handle("/", http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		if warmsSessions(r) {
 			warmSessions()
@@ -1379,6 +1384,8 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			t, _ := json.Marshal(n + " · magpie")
 			out = append(append(append(out, "document.title = "...), t...), ";\n"...)
 		}
+		// and the icons and window colours in the accent (webappmark.go)
+		out = append(out, markBoot(markOf(s))...)
 		if css := lookCSS(s); css != "" {
 			c, _ := json.Marshal(css)
 			out = append(out, `(function(){var e=document.createElement("style");e.id="lookCSS";e.textContent=`...)
@@ -2502,7 +2509,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			return
 		}
 		if strings.TrimSpace(in.User) == "" {
-			fail(rw, fmt.Errorf("which Codex account?"))
+			fail(rw, fmt.Errorf("which ChatGPT account?"))
 			return
 		}
 		set := func() error { return provider.SetCodexAutoReset(in.User, in.On) }
@@ -2559,7 +2566,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			return
 		}
 		if strings.TrimSpace(in.User) == "" {
-			fail(rw, fmt.Errorf("which Codex account?"))
+			fail(rw, fmt.Errorf("which ChatGPT account?"))
 			return
 		}
 		// on alone keeps first or last as it was; either said sets it,
@@ -3128,6 +3135,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		summaryNeedsChannel(&s)
 		if err := settings.Save(s); err != nil {
 			fail(rw, err)
 			return
@@ -3142,10 +3150,84 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, fmt.Errorf("no Bark device key is set"))
 			return
 		}
-		title, body := barkTestText(trayLang(s.Lang, systemLang))
+		title, body := barkTestText(trayLang(s.Lang, systemLang), "Bark")
 		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 		defer cancel()
 		if err := bark.Push(ctx, t, title, body); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, map[string]bool{"ok": true})
+	})
+	// a Telegram bot's token and chat, and a Discord webhook, that every
+	// alert and the daily summary also go to (gandli on X). A field left
+	// out stays; "" takes it away. The token and the webhook are written
+	// and never read back by the page.
+	mux.HandleFunc("POST /api/settings/alert-channels", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			TelegramToken  *string `json:"telegramToken"`
+			TelegramChat   *string `json:"telegramChat"`
+			DiscordWebhook *string `json:"discordWebhook"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		s := settings.Load()
+		if in.TelegramToken != nil {
+			s.TelegramToken = *in.TelegramToken
+		}
+		if in.TelegramChat != nil {
+			s.TelegramChat = *in.TelegramChat
+		}
+		if in.DiscordWebhook != nil {
+			s.DiscordWebhook = *in.DiscordWebhook
+		}
+		if err := settings.CheckTelegram(s.TelegramToken, s.TelegramChat); err != nil {
+			fail(rw, err)
+			return
+		}
+		if err := settings.CheckDiscord(s.DiscordWebhook); err != nil {
+			fail(rw, err)
+			return
+		}
+		summaryNeedsChannel(&s)
+		if err := settings.Save(s); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, settingsState())
+	})
+	// a message to the saved Telegram chat or Discord webhook, to see that
+	// it arrives
+	mux.HandleFunc("POST /api/alert-channels/test", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			To string `json:"to"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		s := settings.Load()
+		var c *channel
+		for _, x := range channels(s) {
+			if x.name == in.To && x.name != "bark" {
+				c = &x
+			}
+		}
+		name := map[string]string{"telegram": "Telegram", "discord": "Discord"}[in.To]
+		if name == "" {
+			fail(rw, fmt.Errorf("no such alert channel: %q", in.To))
+			return
+		}
+		if c == nil {
+			fail(rw, fmt.Errorf("%s isn't set", name))
+			return
+		}
+		title, body := barkTestText(trayLang(s.Lang, systemLang), name)
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		if err := c.send(ctx, title, body); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -3400,6 +3482,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		rw.WriteHeader(http.StatusNoContent)
 	})
 	agentModelsAPI(mux)
+	agentsOffAPI(mux)
 	speedsAPI(mux)
 	modelPriceRoutes(mux)
 	devListen(mux)
@@ -3465,6 +3548,7 @@ func held(h http.Handler) http.Handler {
 // read of the last one (lastKnown), which puts today's settings in it
 func stateSettings(s settings.Settings) settings.Settings {
 	s.Proxies, s.LANKey, s.BarkKey, s.GitHubToken = nil, "", "", ""
+	s.TelegramToken, s.DiscordWebhook = "", ""
 	return s
 }
 
@@ -3853,6 +3937,35 @@ func writeJSONRows[T any](rw http.ResponseWriter, r *http.Request, key string, r
 	return tag
 }
 
+// joinPIDs is pids as "12, 34", for an error's map of strings.
+func joinPIDs(pids []int) string {
+	s := make([]string, len(pids))
+	for i, p := range pids {
+		s[i] = strconv.Itoa(p)
+	}
+	return strings.Join(s, ", ")
+}
+
+// agyUnlistedSaid is a refused agy switch when the processes couldn't be
+// listed, in an i18n.js key.
+const agyUnlistedSaid = "magpie couldn't tell whether agy or the Antigravity app is running, so nothing was changed. Try again"
+
+// agyRunningSaid is a refused agy switch in an i18n.js key, its pids in
+// {pids} (the plugin's among them) and {plugin}. The plugin's agy alone
+// needs no quitting: it ends by itself.
+func agyRunningSaid(r provider.AgyRunning) string {
+	agy := len(r.PIDs) > 0 || len(r.Plugin) > 0 && r.App
+	switch {
+	case r.App && agy:
+		return "Quit the Antigravity app and agy (pid {pids}) first: while they run they keep the account they started on and write it back over a switch. Nothing was changed"
+	case r.App:
+		return "Quit the Antigravity app first: while it runs it keeps the account it started on and writes it back over a switch. Nothing was changed"
+	case len(r.PIDs) > 0:
+		return "Quit agy (pid {pids}) first: while it runs it keeps the account it started on and writes it back over a switch. Nothing was changed"
+	}
+	return "The Antigravity CLI plugin's agy (pid {plugin}) is still on agy's account; it ends by itself within ten minutes, then switch. Nothing was changed"
+}
+
 func fail(rw http.ResponseWriter, err error) {
 	rw.Header().Set("Content-Type", "application/json")
 	rw.WriteHeader(http.StatusBadRequest)
@@ -3893,6 +4006,16 @@ func fail(rw http.ResponseWriter, err error) {
 		out["detail"] = redactProxyErr(unreachable.Err.Error())
 		out["error"] = redactProxyErr(out["error"])
 		out["said"] = unreachableSaid[unreachable.Proxy != ""]
+	}
+	// a switch of agy's sign-in refused while agy or the Antigravity app
+	// runs on it (#1908): what runs, said in the reader's language
+	var agyRunning *provider.AgyRunning
+	if errors.As(err, &agyRunning) {
+		out["code"], out["said"], out["pids"], out["plugin"] = "agy_running", agyRunningSaid(*agyRunning), joinPIDs(append(slices.Clone(agyRunning.PIDs), agyRunning.Plugin...)), joinPIDs(agyRunning.Plugin)
+	}
+	var agyUnlisted *provider.AgyUnlistedError
+	if errors.As(err, &agyUnlisted) {
+		out["code"], out["said"] = "agy_unlisted", agyUnlistedSaid
 	}
 	var noModels *agent.NoModelsError
 	if errors.As(err, &noModels) {

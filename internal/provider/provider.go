@@ -207,6 +207,11 @@ type Provider struct {
 	// used-up account (a switch off it, becoming its provider for it)
 	// restart it either way: the app greys Send there (8b0132b3d).
 	RestartApp bool `json:"restartApp,omitempty"`
+	// AutoSwitch, on Antigravity CLI's subscription with SwitchOnly, has
+	// magpie sign agy in to the next account with room by itself when the
+	// one it is on runs low (SwitchAgyWhenSpent). Off, the default, agy's
+	// account changes only when the user picks one (#1908).
+	AutoSwitch bool `json:"autoSwitch,omitempty"`
 	// KeepSelf, on a Remote magpie that turned out to be this magpie
 	// (SelfAnswered), keeps it in routing anyway: left alone, such a
 	// provider is left out (SelfLeftOut). It is this computer's own, as
@@ -425,6 +430,16 @@ type Provider struct {
 	// `magpie provider set <id> patience=`; a group it is in keeps the
 	// group's own.
 	Patience int `json:"patience,omitempty"`
+
+	// FirstToken is how many seconds a streamed reply of this provider
+	// may take to its first content (text, reasoning or a tool call)
+	// before its next key or account, or a routing group's next member,
+	// is asked instead, nothing of it having reached the agent (GoForceX
+	// on X), as a group's FirstToken does: from 1 to FirstTokenLongest, 0
+	// for none of its own, which leaves its tries timed as before, by the
+	// group they go through or not at all. Set, it is what its tries are
+	// timed by in any group. The last one left is always waited for.
+	FirstToken int `json:"firstToken,omitempty"`
 
 	// Socket has a Responses API provider's turns go over the Responses
 	// WebSocket magpie speaks to chatgpt.com (#5781, matrix0487 on
@@ -1193,7 +1208,7 @@ func withPicks(a, pk Provider) Provider {
 func accountSettings(a, pk Provider) Provider {
 	a.PickedFrom, a.Delisted, a.DelistedAt = pk.PickedFrom, pk.Delisted, pk.DelistedAt
 	a.Models, a.Unlisted, a.Off, a.Fallback, a.Routing, a.Affinity, a.KeepLogin, a.KeepLoginAs, a.Contexts, a.Family = pk.Models, pk.Unlisted, pk.Off, pk.Fallback, pk.Routing, pk.Affinity, pk.KeepLogin, pk.KeepLoginAs, pk.Contexts, pk.Family
-	a.SwitchOnly, a.RestartApp = pk.SwitchOnly, pk.RestartApp
+	a.SwitchOnly, a.RestartApp, a.AutoSwitch = pk.SwitchOnly, pk.RestartApp, pk.AutoSwitch
 	a.Sink, a.NoModels, a.BestInFamily = pk.Sink, pk.NoModels, pk.BestInFamily
 	a.NativeCompaction = pk.NativeCompaction
 	a.PromptAsWritten = pk.PromptAsWritten
@@ -1218,6 +1233,8 @@ func accountSettings(a, pk Provider) Provider {
 	a.MaxImages = pk.MaxImages
 	// how long a request to it alone is kept while it is busy
 	a.Patience = pk.Patience
+	// and how long its replies may take to begin (FirstToken)
+	a.FirstToken = pk.FirstToken
 	// how long its accounts rest out of quota, and the most they rest
 	// while they keep failing (#2008); or not at all for a limit
 	a.QuotaRest, a.QuotaResetAt, a.RestCap, a.LimitRestOff = pk.QuotaRest, pk.QuotaResetAt, pk.RestCap, pk.LimitRestOff
@@ -1998,6 +2015,7 @@ func normalize(p Provider) Provider {
 		p.Patience = PatienceOff
 	}
 	p.Patience = min(p.Patience, PatienceLongest)
+	p.FirstToken = min(max(p.FirstToken, 0), FirstTokenLongest)
 	if v, ok := ParseSocket(p.Socket); ok {
 		p.Socket = v
 	} else {
@@ -2760,10 +2778,24 @@ func (p Provider) On() bool { return p.Ready() && !p.Off && !p.KeptToAgent() && 
 // magpie moves to the next account with room and back, and the gateway
 // sends no request to them, so none goes through Claude Code's SDK run,
 // which spends more of the allowance than Claude Code's own sessions
-// (myduso on Discord). Codex's SwitchOnly only keeps failover out of its
+// (myduso on Discord). Antigravity CLI's is the same (#1908): its
+// accounts are agy's own sign-in, which magpie switches in the keyring
+// (agy_switch.go). Codex's SwitchOnly only keeps failover out of its
 // config.
 func (p Provider) KeptToAgent() bool {
-	return p.SwitchOnly && p.ID == "claude" && p.Account != nil && p.Account.Agent == "claude"
+	if !p.SwitchOnly || p.Account == nil {
+		return false
+	}
+	return p.ID == "claude" && p.Account.Agent == "claude" || p.ID == agyCLIID && p.IsPlugin()
+}
+
+// KeptAgentName is the agent whose own sign-in a provider KeptToAgent is
+// kept to, as a message names it.
+func (p Provider) KeptAgentName() string {
+	if p.ID == agyCLIID {
+		return "agy"
+	}
+	return "Claude Code"
 }
 
 // SetOff switches a provider off, or on again (see Provider.Off). Saving

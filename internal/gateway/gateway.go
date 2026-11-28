@@ -357,14 +357,15 @@ func namesInCatalog() map[string]bool {
 
 // switchedOff says a request for model went nowhere because p, which
 // serves it, is switched off in magpie (provider.Provider.Off), or kept to
-// Claude Code's own sign-in (provider.Provider.KeptToAgent), or a Remote
+// its agent's own sign-in (provider.Provider.KeptToAgent), or a Remote
 // magpie that is this one (provider.Provider.SelfLeftOut).
 func switchedOff(p provider.Provider, model string) string {
 	if p.SelfLeftOut() && !p.Off {
 		return fmt.Sprintf("%s is a Remote magpie that is this magpie itself, so %q is not served through it; ask for the model without %q in front, or tick \"Use it anyway\" on it in Magpie's Providers", p.Name, model, p.ID+"/")
 	}
 	if p.KeptToAgent() {
-		return fmt.Sprintf("%s's accounts are kept to Claude Code's own sign-in in Magpie, so %q is not served; untick \"Only switch Claude Code's sign-in\" under its accounts in Magpie's Providers to use it", p.Name, model)
+		a := p.KeptAgentName()
+		return fmt.Sprintf("%s's accounts are kept to %s's own sign-in in Magpie, so %q is not served; untick \"Only switch %s's sign-in\" under its accounts in Magpie's Providers to use it", p.Name, a, model, a)
 	}
 	return fmt.Sprintf("%s is switched off in Magpie, so %q is not served; switch it on again in Magpie's Providers to use it", p.Name, model)
 }
@@ -999,7 +1000,9 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		// and, when settings say to, starts its accounts' next windows as the last reset
 		bg.Go("provider.KeepCodexWindowsWarm", func() { provider.KeepCodexWindowsWarm(ctx) })
 		bg.Go("provider.KeepClaudeWindowsWarm", func() { provider.KeepClaudeWindowsWarm(ctx, warmClaude) })
-		bg.Go("provider.KeepAgyWindowsWarm", func() { provider.KeepAgyWindowsWarm(ctx) })
+		// and signs agy in to its next account when the one it is on runs
+		// low, when the user turned that on (#1908)
+		bg.Go("provider.KeepAgyOnAnAccountWithRoom", func() { provider.KeepAgyOnAnAccountWithRoom(ctx) })
 		// and keeps Antigravity's fast-tools plugin starting a magpie that
 		// is there, once it is on
 		bg.Go("keepFastTools", keepFastTools)
@@ -1191,6 +1194,11 @@ func (s *Server) routes() *routeMux {
 	mux.HandleFunc("POST /api/chat", s.ollamaChat(false))
 	mux.HandleFunc("POST /api/generate", s.ollamaChat(true))
 	mux.HandleFunc("GET /v1/magpie/quotas", s.quotas)
+	// CLIProxyAPI's management API, its usage reads alone, for a reader
+	// of a hub's limits (T3 Code, #7402; cliproxy_mgmt.go)
+	mux.HandleFunc(mgmtAuthFilesPattern, s.mgmtAuthFiles)
+	mux.HandleFunc(mgmtAPICallPattern, s.mgmtAPICall)
+	mux.HandleFunc(mgmtPattern, s.mgmtNotFound)
 	mux.HandleFunc("GET "+AccountsPath, s.accountsList)
 	mux.HandleFunc("GET /v1/magpie/usage", s.usageSummary)
 	mux.HandleFunc("GET /v1/magpie/usage/requests", s.usageRequests)
@@ -1198,6 +1206,8 @@ func (s *Server) routes() *routeMux {
 	mux.HandleFunc("GET /v1/magpie/quotas/history", s.quotasHistory)
 	mux.HandleFunc("GET "+provider.RemoteCardsPath, s.quotaCards)
 	mux.HandleFunc("GET "+provider.RemoteLibraryPath, s.sharedLibrary)
+	mux.HandleFunc("GET "+SkillsArchivePath, s.skillsArchive)
+	mux.HandleFunc("GET "+SkillsPullPath, s.skillsPull)
 	mux.HandleFunc("GET "+provider.RemoteAgentModelsPath, s.sharedAgentModels)
 	mux.HandleFunc("POST "+provider.RemoteRefreshPath, s.quotaCardsRefresh)
 	mux.HandleFunc("POST "+provider.RemoteCodexResetPath, s.codexReset)
@@ -1679,6 +1689,24 @@ func (s *Server) codexReset(w http.ResponseWriter, r *http.Request) {
 		done()
 	}
 	writeJSON(w, 200, out)
+}
+
+// cindyLevels are the levels Cindy is offered of a model with levels
+// efforts: all of them but Codex's Ultra. Cindy's picker offers the
+// levels this list gives (parseModelsListResponse) and hands the one
+// picked to the Codex it runs, whose catalog for a provider's model is
+// Codex's own entry or, for one Codex doesn't know, an entry with no
+// levels (catalogWithModels, nativeCodexFallbackModel). Codex sends Ultra
+// as the multi-agent effort, max or the highest level of that entry, and
+// medium where it has none (ModelInfo::resolve_reasoning_effort), so
+// gpt-6.2-astra, which Codex knows from 0.171 and Cindy's runs 0.166 of,
+// went out at medium when Ultra was picked (Zanghaihuase6m on X). Max is
+// still offered, which is what the gateway sends for Ultra (fitEffort).
+func cindyLevels(efforts []string) []string {
+	if !slices.Contains(efforts, "ultra") {
+		return efforts
+	}
+	return slices.DeleteFunc(slices.Clone(efforts), func(e string) bool { return e == "ultra" })
 }
 
 func modelObject(e provider.Entry) map[string]any {
@@ -2167,6 +2195,9 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 			// (claude_discovery.go)
 			discovers, who := !magpie && claudeCodeDiscovers(r), access.Caller(r.Context())
 			for i, e := range rows {
+				if agent == "cindy" {
+					e.Efforts = cindyLevels(e.Efforts)
+				}
 				m := rs.row(e, labels[i])
 				id, bare := ids[i]
 				if bare {
@@ -3717,6 +3748,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			w.Header().Set("Retry-After", strconv.Itoa(int(d.Seconds())+1))
 		}
 		call.Status, call.Error = 429, record
+		if from == provider.Anthropic {
+			msg = quotaResetHint(msg, cappedQuotaResetBack(held, time.Now()))
+		}
 		writeError(w, from, 429, msg)
 		turnedAway()
 		return
@@ -4349,6 +4383,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 					w.Header().Set("Retry-After", strconv.Itoa(int(d.Seconds())+1))
 				}
 				call.Status, call.Error = 429, cappedRecord(ws)
+				if from == provider.Anthropic && !kept.sent && i == 0 && len(all) == 1 && len(pl.capped) == 0 && len(pl.held) == 0 {
+					msg = quotaResetHint(msg, cappedQuotaResetBack(ws, time.Now()))
+				}
 				failTo(w, kept, from, 429, msg)
 				break
 			}
@@ -4439,10 +4476,15 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		if firstToken == 0 && isGroup {
 			firstToken = g.FirstTokenOr()
 		}
-		if isGroup && firstToken > 0 && !last && streams && !pass {
+		if c.p.FirstToken > 0 {
+			// the provider's own, in a group or not: its next key or
+			// account, or the next member, is asked (GoForceX on X)
+			firstToken = c.p.FirstToken
+		}
+		if firstToken > 0 && !last && streams && !pass {
 			// slow to start, the next member is asked (Group.FirstToken)
 			hw.firstWait = time.Duration(firstToken) * time.Second
-			if left := groupBudget - time.Since(walkBegan); left < hw.firstWait {
+			if left := groupBudget - time.Since(walkBegan); isGroup && left < hw.firstWait {
 				// the members before it used the walk's time: it gets
 				// what is left, so the walk ends before the client's
 				hw.firstWait, hw.budgeted = max(left, time.Millisecond), true
@@ -5163,7 +5205,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			call.TTFT, call.FirstText, call.Flow, call.FirstReasoning = 0, 0, 0, 0
 			watched.attempt(call, try, c.p.ID, sent, hw, capture)
 			s.trace.update(tr, func(t *Route) { t.Tries[len(t.Tries)-1] = try })
-			if hw.budgeted || time.Since(walkBegan) >= groupBudget {
+			if hw.budgeted || isGroup && time.Since(walkBegan) >= groupBudget {
 				// the group's time is spent: no further member is asked
 				// to start after the client has given up, and the error
 				// names the budget (#5113)
@@ -6185,7 +6227,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			// Codex is told in its stream, the one place it compacts on it
 			failTo(w, kept, from, call.Status, call.Error)
 		} else {
-			hw.release()
+			var back time.Time
+			if from == provider.Anthropic && last && !pass && !hw.passing && !kept.sent && hw.status == http.StatusTooManyRequests && (held || try.Rest != nil) && len(pl.held) == 0 && len(pl.capped) == 0 {
+				// Include candidates probeLeft did not ask again, as well as
+				// those added to the walk later. Each must be known spent.
+				back = quotaResetBack(time.Now(), all, cands)
+			}
+			hw.releaseWithQuotaReset(back)
 			if hw.passing {
 				clientResponseID = call.Usage.ResponseID
 			}

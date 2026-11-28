@@ -372,7 +372,7 @@ function toneCheck(img) {
     swap();
   }, { once: true });
 }
-const pngIcons = new Set(["aigocode", "crush", "zcode", "alma", "hanako", "cindy", "lody", "typesafe", "atomcode", "snow", "mlx-serve", "gpustack", "mothx", "zoo-code", "kimi-code-desktop", "catpaw", "openbot", "avibe", "kun", "nowledge-mem"]);
+const pngIcons = new Set(["aigocode", "crush", "zcode", "alma", "hanako", "cindy", "lody", "typesafe", "atomcode", "snow", "mlx-serve", "gpustack", "mothx", "zoo-code", "kimi-code-desktop", "catpaw", "openbot", "avibe", "kun", "nowledge-mem", "orca"]);
 
 // lazy: a picture in a long list (Plugins' rows) is asked for near the
 // screen: each SVG an <img> draws is a ~0.6 MB webview document, kept (#909)
@@ -1412,11 +1412,11 @@ function connectLine(a, kind) {
   if (!a.wired) {
     const src = a.source || "";
     const sw = switchEntry(a);
-    if (kindOf(a) === "agy") say(t("Not connected · once connected, start it with magpie's command"));
+    if (kindOf(a) === "agy" && !sw) say(t("Not connected · once connected, start it with magpie's command"));
     // through magpie only for failover (#1385): the line says so
     else if (a.failover) {
       say(t("Not connected · goes through magpie only to fail over to your other ChatGPT accounts"));
-      words.title = t("magpie set openai_base_url in {agent}'s config.toml, so a request the ChatGPT account {agent} is signed in to has no allowance for goes on to your other ChatGPT accounts on in magpie. {agent} keeps to its own models. To stop it, tick Only switch {agent}'s sign-in under Providers › Codex, or switch those accounts off; connecting {agent} adds magpie's models.", { agent: a.name });
+      words.title = t("magpie set openai_base_url in {agent}'s config.toml, so a request the ChatGPT account {agent} is signed in to has no allowance for goes on to your other ChatGPT accounts on in magpie. {agent} keeps to its own models. To stop it, tick Only switch {agent}'s sign-in under Providers › ChatGPT, or switch those accounts off; connecting {agent} adds magpie's models.", { agent: a.name });
     }
     else if (sw?.p.switchOnly) say(t("Not connected · switching accounts only"));
     // with Claude Magpie made, connecting wires it, not the user's own Desktop (desktopSets; xMopf7RF on X)
@@ -1631,12 +1631,17 @@ function connectRow(a, row, who, { fields, extras, fieldBtn, sw, kind }) {
 
 // Switch accounts only (the owner on X): a Claude Code or Codex not connected says its account
 let accountSwitched = null, panelAccts = null;
-const switchesAccounts = (a) => !a.wired && (a.id === "claude" || a.id === "codex");
+// agy and the Antigravity app share agy's sign-in, which magpie switches
+// between Antigravity CLI's accounts with Only switch on (#1908)
+const agyShares = (a) => /^(agy|antigravity)$/.test(a.id);
+const switchesAccounts = (a) => !a.wired && /^(claude|codex|agy|antigravity)$/.test(a.id);
+const switchesVia = (a) => agyShares(a) ? "agy-cli" : a.id;
 
 function switchable(a) {
   if (!switchesAccounts(a)) return null;
-  const p = (mode === "panel" ? panelAccts : providers || providersEarly?.got)?.providers?.find((x) => x.id === a.id && x.account?.agent === a.id);
-  return p && loginsInOrder(p.account, p)[0]?.user ? p : null;
+  const id = switchesVia(a), p = (mode === "panel" ? panelAccts : providers || providersEarly?.got)?.providers?.find((x) => x.id === id && x.account?.agent === id);
+  // agy's: only with Only switch on, where picking one signs agy in to it
+  return p && (!agyShares(a) || p.switchOnly) && loginsInOrder(p.account, p)[0]?.user ? p : null;
 }
 
 function switchEntry(a) {
@@ -1660,6 +1665,8 @@ function switchEntry(a) {
   b.append(pn ? el("span", "chev", svg(CHEV, 11, 1.7)) : svg(CHEV, 10, 1.6));
   const opts = ls.filter((l) => !l.token && !l.accessOnly).map((l) => ({ v: "u:" + l.user, name: l.user, literalName: true, note: l.lapsed ? "Sign-in required" : accountPlan({ ...l, agent: a.id }) }));
   const on = cx ? t("magpie only switches {agent}'s sign-in; its requests go straight to OpenAI", ag) : t("magpie serves no requests on these accounts");
+  // agy's sign-in is agy's own, whichever row (agy, or the Antigravity app) it is picked from
+  if (agyShares(a)) ag.agent = "agy";
   // the Only switch setting, where the accounts page offers it
   if (!cx || ls.filter((l) => !l.lapsed && (l.active || l.on)).length > 1) opts.push({ v: "only", name: t("Only switch {agent}'s sign-in", ag), literalName: true, ticked: !!p.switchOnly, note: on });
   opts.push({ v: "manage", name: "Manage accounts…", note: "" });
@@ -1686,7 +1693,7 @@ function switchEntry(a) {
 async function switchAccountTo(a, p, user) {
   const said = t("{agent} is now signed in as {user}. New {agent} sessions use this account; one already open keeps its account until it is started again.", { agent: a.name, user });
   // kept signed in to one of the user's choosing (#524): that choice moves
-  if (!await (keptLogin(p) ? accountAction("provider/keeplogin", { id: p.id, keepLogin: true, keepLoginAs: user }, said) : accountAction("login/switch", { agent: a.id, user }, said))) return;
+  if (!await (keptLogin(p) ? accountAction("provider/keeplogin", { id: p.id, keepLogin: true, keepLoginAs: user }, said) : accountAction("login/switch", { agent: switchesVia(a), user }, said))) return;
   accountSwitched = { agent: a.id, user, at: performance.now() };
   renderAgents();
 }
@@ -3426,6 +3433,9 @@ async function openAgentModels(a, anchor, ev) {
   }
   if (agentModelsLoading !== loading) return;
   loading.drop();
+  // one turned off for agents on the Gateway page stays as it is here,
+  // as one the agent is set to does
+  for (const m of models) if (m.off) m.inUse = 1;
   // the button as it is drawn now
   anchor = loading.anchor;
   if (!anchor.isConnected) return;
@@ -3436,7 +3446,7 @@ async function openAgentModels(a, anchor, ev) {
   // by provider, or by maker as a provider's editor has its models
   // (elis_pina on X), kept for the next time
   let byMaker = !!window.makerGroups && kept("agentModelsBy", "") === "maker";
-  const segBy = el("div", "am-seg am-by"), byP = el("button", "", t("By provider")), byM = el("button", "", t("By maker"));
+  const segBy = el("div", "am-by"), byP = el("button", "", t("By provider")), byM = el("button", "", t("By maker"));
   byP.type = byM.type = "button";
   segBy.append(byP, byM);
   segBy.hidden = !window.makerGroups;
@@ -3490,21 +3500,11 @@ async function openAgentModels(a, anchor, ev) {
   // takes back a first click on Hide all or Show all (twice, below)
   let disarm = () => {};
   foot.append(onlyBox, el("span", "sp"), hideAll, el("span", "am-dot", "·"), reset, joinBox);
-  // groups as the catalog has them, routing groups first; a long one
-  // starts folded, unless the agent is set to a model in it. By maker,
-  // the routing groups stay first, a group of their own
+  // groups by provider or maker, routing groups first, each the newest
+  // first unless dragged (agentGroups, modelorder.js); a long one starts
+  // folded, unless the agent is set to a model in it
   const groups = [];
-  const regroup = () => {
-    groups.length = 0;
-    for (const m of models) {
-      if (byMaker && m.group !== ROUTING_GROUPS) continue;
-      let g = groups.find((x) => x.name === m.group);
-      if (!g) groups.push(g = { name: m.group, icon: m.icon, models: [] });
-      g.models.push(m);
-    }
-    groups.sort((x, y) => (y.name === ROUTING_GROUPS) - (x.name === ROUTING_GROUPS));
-    if (byMaker) groups.push(...makerGroups(models.filter((m) => m.group !== ROUTING_GROUPS)));
-  };
+  const regroup = () => groups.splice(0, groups.length, ...self.agentGroups?.(models, byMaker, ordered) || [{ name: "", models }]);
   const gname = (g) => g.label || (g.name === ROUTING_GROUPS ? t(g.name) : g.name);
   regroup();
   // folding is for telling providers (or makers) apart: routing groups
@@ -3763,9 +3763,9 @@ async function openAgentModels(a, anchor, ev) {
           r.type = "button";
           r.setAttribute("role", "menuitemcheckbox");
           r.setAttribute("aria-checked", String(!m.hidden));
-          r.title = m.inUse ? t("{agent} is set to it, so it stays", { agent: a.name }) : m.id;
+          r.title = m.off ? t("Turned off for agents on the Gateway page") : m.inUse ? t("{agent} is set to it, so it stays", { agent: a.name }) : m.id;
           const n = el("span", "n", m.name);
-          if (m.inUse) n.append(el("span", "am-tag", t("Current")));
+          if (m.inUse && !m.off) n.append(el("span", "am-tag", t("Current")));
           const ck = el("span", "ck");
           if (!m.hidden) ck.append(svg("m3.5 8.5 3 3 6-7", 12, 1.9));
           // a routing group: its providers' icons stacked, as everywhere
@@ -6110,7 +6110,7 @@ function prefetchProviders() {
   e.read.then((s) => {
     e.got = s;
     markNewPartners();
-    if (state?.agents?.some((a) => !a.wired && (a.id === "claude" || a.id === "codex"))) renderAgents();
+    if (state?.agents?.some(switchesAccounts)) renderAgents();
   }, () => { if (providersEarly === e) providersEarly = null; });
 }
 
@@ -6887,8 +6887,9 @@ function accountPlan(a) {
   // the one it was signed in on, and a Claude reading is the plan after
   // its run (CoderMaurice on X: an upgraded account read its old plan in
   // the editor only). Another's reading names its plan in words of its
-  // own; with none read, the sign-in's.
-  const agent = a.builtin || a.agent, q = /^(claude|codex)$/.test(agent) && !a.lapsed && loginUsage[agent]?.data?.[a.user], plan = (q && !q.error && q.plan) || a.plan;
+  // own; with none read, the sign-in's. A ChatGPT API account's reading is
+  // its Codex twin's (samePlanReadings), the plan now as on the Codex row.
+  const agent = a.builtin || a.agent, q = /^(claude|codex|chatgpt-api)$/.test(agent) && !a.lapsed && loginUsage[agent]?.data?.[a.user], plan = (q && !q.error && q.plan) || a.plan;
   const cap = (s) => s[0].toUpperCase() + s.slice(1);
   // "Xiaomi MiMo" and "MiMo 高阶" overlap in "MiMo": said once
   const named = (name, plan) => {
@@ -8031,13 +8032,16 @@ function concurrencyField(p) {
   queue.classList.add("queue-limit");
   const wait = input(draft.queueWait ?? "", t("As long as it takes"), "number");
   wait.classList.add("queue-wait");
+  // seconds its streamed reply may take to begin (GoForceX on X)
+  const first = input(draft.firstToken ?? "", t("Default"), "number");
+  first.classList.add("first-token");
   // requests a minute (coeo91: OpenRouter's free models take 20)
   const rpm = input(draft.maxRPM ?? "", t("No limit"), "number");
   rpm.classList.add("rpm");
   // the rest wait in reserve (01huadalang: ZCode bans 3 per IP)
   const accounts = input(draft.maxAccounts ?? "", p?.pluginAccounts ? t("{n}, as its plugin says", { n: p.pluginAccounts }) : t("No limit"), "number");
   accounts.classList.add("max-accounts");
-  for (const [b, max, k] of [[box, 1000, "concurrency"], [queue, 10000, "queueLimit"], [wait, 3600, "queueWait"], [rpm, 10000, "maxRPM"], [accounts, 1000, "maxAccounts"]]) {
+  for (const [b, max, k] of [[box, 1000, "concurrency"], [queue, 10000, "queueLimit"], [wait, 3600, "queueWait"], [first, 600, "firstToken"], [rpm, 10000, "maxRPM"], [accounts, 1000, "maxAccounts"]]) {
     b.min = "0";
     b.max = String(max);
     b.step = "1";
@@ -8053,6 +8057,7 @@ function concurrencyField(p) {
     ...field(t("Requests per minute"), rpm, t("How many requests each key or account sends in any minute, retries included; one more waits for room, up to 2 minutes. 0 or empty is no limit")),
     ...field(t("Queue size"), queue, t("How many requests may wait for each key or account; one more is turned away at once. 0 or empty is no bound")),
     ...field(t("Queue wait"), wait, t("Seconds a request waits for a free slot before it is turned away. 0 or empty waits as long as it takes")),
+    ...field(t("Slow to start"), first, t("Seconds a streamed reply may take to begin before the next key, account or member is asked; the last is waited for. Empty follows the group")),
   ];
 }
 // priceRateField: a relay's rate on the official price (#819), which
@@ -8249,7 +8254,7 @@ const groupAdvanced = (b) => self.advGroups?.(b);
 function advancedSet(d, p) {
   return (d.headers || []).some(([k]) => (k || "").trim()) || !!(d.extraBody || "").trim() || !!(d.replyHeaders || d.passHeaders || "").trim() ||
     !!d.proxyMode || Object.values(d.accountProxies || {}).some((x) => x?.mode) || Object.values(d.keyPriceRates || {}).some((v) => String(v).trim()) ||
-    [d.concurrency, d.maxAccounts, d.queueLimit, d.queueWait, d.maxRPM, d.priceRate, d.topUpRate ?? p?.topUpRate, d.contexts, d.outputs, d.compacts].some((v) => String(v ?? "").trim()) ||
+    [d.concurrency, d.maxAccounts, d.queueLimit, d.queueWait, d.firstToken, d.maxRPM, d.priceRate, d.topUpRate ?? p?.topUpRate, d.contexts, d.outputs, d.compacts].some((v) => String(v ?? "").trim()) ||
     !!d.rateWindows?.length ||
     !!(d.searches || d.authHeader || d.passUserAgent === false || d.unredacted || d.countFree || d.billing || d.pinUpstream || d.nativeCompaction || d.balanceToken || d.limitRestOff || d.noBalanceProbe || d.http1 || d.socket || d.imageFilesOff || d.passErrors || d.clientCert || d.serverCA || d.serverPin || d.resolve) ||
     !!d.fallback?.length || !!(p?.balanceToken?.set || p?.connectAgents || p?.maxImages) ||
@@ -8261,14 +8266,14 @@ function priceRateError(ed) {
 }
 function concurrencyDraft(p) {
   return { concurrency: p?.maxConcurrency == null ? "" : String(p.maxConcurrency), priceRate: p?.priceRate ? String(p.priceRate) : "",
-    queueLimit: p?.queueLimit ? String(p.queueLimit) : "", queueWait: p?.queueWait ? String(p.queueWait) : "",
+    queueLimit: p?.queueLimit ? String(p.queueLimit) : "", queueWait: p?.queueWait ? String(p.queueWait) : "", firstToken: p?.firstToken ? String(p.firstToken) : "",
     maxRPM: p?.maxRPM ? String(p.maxRPM) : "", maxAccounts: p?.maxAccounts == null ? "" : String(p.maxAccounts),
     keyPriceRates: { ...p?.keyPriceRates } };
 }
-// queueOfDraft: { queueLimit, queueWait, maxRPM } as saved, 0 for none, or { bad }
+// queueOfDraft: { queueLimit, queueWait, firstToken, maxRPM } as saved, 0 for none, or { bad }
 function queueOfDraft() {
   const out = {};
-  for (const [k, max] of [["queueLimit", 10000], ["queueWait", 3600], ["maxRPM", 10000]]) {
+  for (const [k, max] of [["queueLimit", 10000], ["queueWait", 3600], ["firstToken", 600], ["maxRPM", 10000]]) {
     const v = String(draft[k] ?? "").trim();
     if (!v) { out[k] = 0; continue; }
     if (!/^\d+$/.test(v) || +v > max) return { bad: k };
@@ -8280,6 +8285,10 @@ function queueError(ed, bad) {
   if (bad === "maxRPM") {
     shown(ed.querySelector("input.rpm"))?.focus(NO_SCROLL);
     return editorError(t("Requests per minute: a whole number from 0 to 10000"), "warn");
+  }
+  if (bad === "firstToken") {
+    shown(ed.querySelector("input.first-token"))?.focus(NO_SCROLL);
+    return editorError(t("Slow to start: a whole number of seconds from 0 to 600"), "warn");
   }
   shown(ed.querySelector(bad === "queueLimit" ? "input.queue-limit" : "input.queue-wait"))?.focus(NO_SCROLL);
   return editorError(bad === "queueLimit" ? t("Queue size: a whole number from 0 to 10000") : t("Queue wait: a whole number of seconds from 0 to 3600"), "warn");
@@ -9872,7 +9881,7 @@ function drawEditor(p, presetID) {
       if (a.agent === "claude" && !p.switchOnly) ed.append(claudeModeRow());
       // switched connected or not (Greatrobbort on X)
       const via = a.wsl ? t("Runs through WSL · {distro}: Claude Code there signs in and answers; Windows has none of its own.", { distro: a.wsl }) + " " : "", alone = /^c(laude|odex)$/.test(a.agent) ? " " + t("Just want accounts switched? {agent} needn't be connected to magpie.", { agent: a.agentName }) : "";
-      ed.append(...field(t("Accounts"), renderAccounts(a, p), via + (p.routing ? t("Tick every account to use; Routing says how requests spread over them.") + (subOf(a.agent).own ? " " + t("Only requests through magpie use them; {agent} itself stays signed in as it is.", { agent: a.agentName || p.name }) : "") : subOf(a.agent).single ? t("{agent} keeps one account; the gateway runs it for every request. Signing in to another replaces it.", { agent: a.agentName }) : subOf(a.agent).own && (a.logins || []).some((l) => l.own) ? t("The gateway uses the first. Tick more and it moves on to the next when the one before it is out of quota. {agent} itself stays signed in as it is.", { agent: a.agentName && a.agentName !== a.agent ? a.agentName : p.name }) : subOf(a.agent).own || subOf(a.agent).plugin ? t("The gateway uses the first. Tick more and it moves on to the next when the one before it is out of quota.") : t("{agent} signs in to the first. Tick more and magpie moves on to the next when the one before it is out of quota. Sessions already running keep theirs until restarted.", { agent: a.agentName })) + alone));
+      ed.append(...field(t("Accounts"), renderAccounts(a, p), via + (p.switchOnly && (p.routing || subOf(a.agent).own || subOf(a.agent).plugin) ? t("magpie only switches {agent}'s own sign-in between these accounts; no requests go through magpie.", { agent: a.agentName || p.name }) : p.routing ? t("Tick every account to use; Routing says how requests spread over them.") + (subOf(a.agent).own ? " " + t("Only requests through magpie use them; {agent} itself stays signed in as it is.", { agent: a.agentName || p.name }) : "") : subOf(a.agent).single ? t("{agent} keeps one account; the gateway runs it for every request. Signing in to another replaces it.", { agent: a.agentName }) : subOf(a.agent).own && (a.logins || []).some((l) => l.own) ? t("The gateway uses the first. Tick more and it moves on to the next when the one before it is out of quota. {agent} itself stays signed in as it is.", { agent: a.agentName && a.agentName !== a.agent ? a.agentName : p.name }) : subOf(a.agent).own || subOf(a.agent).plugin ? t("The gateway uses the first. Tick more and it moves on to the next when the one before it is out of quota.") : t("{agent} signs in to the first. Tick more and magpie moves on to the next when the one before it is out of quota. Sessions already running keep theirs until restarted.", { agent: a.agentName })) + (p.switchOnly ? "" : alone)));
       ed.append(...pluginOptionsField(subOf(a.agent), true));
       if ((a.logins || []).filter((l) => l.active || l.on).length > 1) advIn.append(...routingAdvanced(p));
       if (p.move) ed.append(...renderMove(p));
@@ -11712,7 +11721,12 @@ function renderModels(p) {
           const why = p.testsAs[as] ? t(p.testsAs[as]) : "";
           acts.push({ name, icon: PLAY_ICON, off: !!why, why, tip: t("Asked as {agent} asks, for a relay that serves only {agent}", { agent }), run: () => testOne(id, as) });
         }
-        if (p.testPicks) acts.push({ name: "Test on account…", icon: PLAY_ICON, tip: t("Pick the account or key the test is sent to"), run: () => openProtoMenu(c, p.testPicks.map((k) => ({ v: k.id, literalName: true, ...k })), null, (v) => testOne(id, "", v), "Account to test", "model-account-menu") });
+        if (p.testPicks) acts.push({ name: "Test on account…", icon: PLAY_ICON, tip: t("Pick the account or key the test is sent to"), run: () => {
+          openProtoMenu(c, p.testPicks.map((k) => ({ v: k.id, literalName: true, ...k })), null, (v) => testOne(id, "", v), "Account to test", "model-account-menu");
+          // hidden accounts shown from the menu itself (niuniu_8964 on X):
+          // as each account's own eye shows it, till the window closes
+          protoMenu.box.querySelector(".pm-head").append(hideAccounts.eye(p.testPicks.flatMap((k) => [k.id, k.name]), p.id));
+        } });
       }
       // its id as agents and the gateway name it, to paste where a model is
       // typed (ARNO, Discord: 右击菜单除了测试模型外，还能添加拷贝模型id的功能)
@@ -12763,8 +12777,13 @@ function renderFallback(p) {
   for (const g of providers.gateway?.groups || []) all.push({ id: g.id, label: g.name, g: g.providers?.join(" ") || "" });
   for (const o of providers.providers) {
     if (!o.ready || o.off) continue;
-    const tells = modelTells(o.models.filter((m) => m.on));
-    for (const m of o.models) if (m.on) all.push({ id: o.id + "/" + m.id, label: o.name + " · " + (m.name || m.id) + (tells.has(m.id) ? " · " + tells.get(m.id) : ""), icon: o.icon });
+    const on = o.models.filter((m) => m.on);
+    // its own other models too, when it has more than one: an aggregator
+    // whose popular model cools down goes on to another of its models
+    // (big fish on Discord)
+    if (o.id === p.id && on.length < 2) continue;
+    const tells = modelTells(on);
+    for (const m of on) all.push({ id: o.id + "/" + m.id, label: o.name + " · " + (m.name || m.id) + (tells.has(m.id) ? " · " + tells.get(m.id) : ""), icon: o.icon });
   }
   const tell = () => el("span", "mtell", t("routing group"));
   let open = false;
@@ -12790,7 +12809,7 @@ function renderFallback(p) {
     sugg.replaceChildren();
     if (!open && !q.value.trim()) return;
     const f = q.value.trim().toLowerCase();
-    const hits = all.filter((x) => !draft.fallback.includes(x.id) && !x.id.startsWith(p.id + "/") && (x.id + " " + x.label + " " + (x.g ?? "")).toLowerCase().includes(f));
+    const hits = all.filter((x) => !draft.fallback.includes(x.id) && (x.id + " " + x.label + " " + (x.g ?? "")).toLowerCase().includes(f));
     for (const x of hits.slice(0, 12)) {
       const c = el("button", "mchip");
       c.append(...(x.g != null ? [svg(FAN, 12, 1.5), el("span", "", x.label), tell()] : [el("span", "", x.label)]));
@@ -14002,8 +14021,10 @@ function renderAccounts(a, p) {
     }
     if (quota && !l.lapsed) line.querySelector(".plan").after(accountRefresh(a.agent, p, l.user));
     const aq = accountQuota(l.lapsed ? { [l.user]: { error: t(l.lapsed) } } : quota, l.user, capFor, p ? (m, w) => windowCapMeter(m, p, l.user, w) : null, a.agent);
-    // its plan's end, under its line (danzi002)
-    if (l.until) aq.append(Object.assign(planSpan({ until: l.until }), { className: "aq-until" }));
+    // its plan's end, under its line (danzi002); a ChatGPT API sign-in
+    // tells none, its Codex twin's reading does (tmr11235 on X)
+    const until = l.until || !l.lapsed && quota?.[l.user]?.until;
+    if (until) aq.append(Object.assign(planSpan({ until }), { className: "aq-until" }));
     // Check in now (xwoffice_91592)
     const ci = !l.lapsed && quota?.[l.user];
     if (ci?.checkinKey && checkinDue(ci)) {
@@ -14082,20 +14103,13 @@ function renderAccounts(a, p) {
     }
     list.append(box);
   }
-  const cx = a.agent === "codex", ag = { agent: a.agentName };
-  if (p && (cx && several || a.agent === "claude")) {
-    const [only, cb] = tick(t("Only switch {agent}'s sign-in", ag), p.switchOnly);
-    const [tip, on, off] = cx ? [t("When an account is used up, magpie signs {agent} in to the next one, and requests go straight to OpenAI. Open {agent} sessions keep their account until reopened.", ag), t("magpie only switches {agent}'s sign-in; its requests go straight to OpenAI", ag), t("A connected {agent} fails over to your other accounts through magpie again", ag)]
-      : [t("When an account is used up, magpie signs {agent} in to the next one. Requests on these accounts don't go through magpie.", ag), t("magpie serves no requests on these accounts"), t("magpie serves requests on these accounts again")];
-    only.title = tip;
-    cb.onchange = () => accountAction("provider/switchonly", { id: p.id, switchOnly: cb.checked }, cb.checked ? on : off);
-    list.append(el("div", "switch-only", only));
-  }
-  if (p && cx && (several || p.restartApp)) {
-    const [re, cb] = tick(t("Restart the {agent} app when magpie switches its account back", ag), !!p.restartApp);
-    re.title = t("Off, the {agent} app stays on its account until you restart it. A used-up account restarts it anyway.", ag);
-    cb.onchange = () => accountAction("provider/restartapp", { id: p.id, restartApp: cb.checked }, t(cb.checked ? "magpie restarts the {agent} app when it switches accounts back" : "magpie leaves the {agent} app running when it switches accounts back", ag));
-    list.append(el("div", "restart-app", re));
+  // Only switch {agent}'s sign-in, agy's Switch automatically (#1908) and
+  // Restart the Codex app, in switchticks.js: drawn here alone
+  const cx = a.agent === "codex";
+  if (p && (cx && several || a.agent === "claude" || a.agent === "agy-cli" || cx && p.restartApp)) {
+    const at = el("div");
+    if (window.switchTicks) list.append(...switchTicks(a, p, several));
+    else list.append(at), import("./switchticks.js").then(() => at.isConnected && at.replaceWith(...switchTicks(a, p, several)), () => {});
   }
   // how a pool ends at its caps (plugins#349)
   const capped = (l) => accountCapOf(p, l.user) || windowCapsOf(p, l.user);
@@ -14418,7 +14432,7 @@ function quotaError(err, q) {
   if (chatgpt) return t("ChatGPT answered HTTP {status} — hover for what it said", { status: chatgpt[1] });
   if (/^couldn't reach chatgpt\.com for the usage read/.test(err)) return t("Couldn't reach ChatGPT — check the network or the proxy");
   if (/^ChatGPT's usage reply isn't one magpie reads/.test(err)) return t("ChatGPT answered in a form magpie doesn't read — hover for what it sent");
-  if (/^a ChatGPT API account's usage isn't told through OpenAI's API/.test(err)) return t("OpenAI's API doesn't tell a ChatGPT API account's usage — see chatgpt.com/settings/usage, or add the account as ChatGPT to see it here");
+  if (/^a ChatGPT API account's usage isn't told through OpenAI's API/.test(err)) return t("OpenAI's API doesn't tell a ChatGPT API account's usage — see chatgpt.com/settings/usage. It shows here while Codex is signed in to the same ChatGPT account");
   // a switched-off subscription is not read (errLeftAlone, login_usage.go)
   if (/^not read yet: this subscription is switched off/.test(err)) return t("Switched off, so no allowance is read — switch it on and refresh");
   const bal = balanceError(err);
@@ -14537,7 +14551,10 @@ function balanceFix(p) {
 
 // accountRefresh: an account row's refresh, then its rows read again
 function accountRefresh(agent, p, user) {
-  const b = quotaRefresh({ provider: p?.id || agent, user }, async () => {
+  // a ChatGPT API account showing its Codex twin's reading (samePlanReadings) reads that one again
+  const twin = loginUsage[agent]?.data?.[user]?.samePlan;
+  const b = quotaRefresh(twin ? { provider: "codex", user: twin } : { provider: p?.id || agent, user }, async () => {
+    if (twin && loginUsage.codex) loginUsage.codex.at = 0;
     await loginUsage[agent]?.loading;
     if (loginUsage[agent]) loginUsage[agent].at = 0;
     loginUsageOf(agent);
@@ -14561,14 +14578,16 @@ function accountQuota(data, user, capFor = () => 0, settable = null, prov) {
     line.append(el("span", "aq-asof", asOfText(q)));
   }
   if (q?.resets?.count && !q.error) {
-    // Codex's are used from here too, as on Usage (roamlog on X)
-    const words = resetsWords(q.resets), use = prov == "codex" && !q.resets.byWindow;
+    // Codex's are used from here too, as on Usage (roamlog on X), and from
+    // a ChatGPT API row read through its Codex twin: the same plan's
+    // (samePlan, tmr11235 on X), spent with that Codex account
+    const twin = q.samePlan, words = resetsWords(q.resets), use = (prov == "codex" || twin) && !q.resets.byWindow;
     const resets = el("span", "aq-w aq-resets" + (use ? " aq-set" : ""));
     resets.title = tipLines(words.textContent, words.title, use && "\n" + resetUseTitle(q));
     resets.append(words.querySelector(".resets-n"));
     if (use) {
       spanBtn(resets).setAttribute("aria-haspopup", "dialog");
-      resets.onclick = (e) => { e.stopPropagation(); askReset({ ...q, provider: prov, user }); };
+      resets.onclick = (e) => { e.stopPropagation(); askReset({ ...q, provider: "codex", user: twin || user }); };
     }
     line.append(resets);
   }
@@ -14601,6 +14620,7 @@ function accountQuota(data, user, capFor = () => 0, settable = null, prov) {
   if (ws.some((w) => w.members)) return poolLine(line, ws, q, capFor, settable);
   line.title = ws.slice(3).map((w) => w.tiers ? tiersText(w) : t(w.name) + " " + quotaText(w)).join(ws !== counted ? "\n" : " · ");
   if (q.asOf) line.title = tipLines(line.title, asOfText(q));
+  if (q.samePlan) line.title = tipLines(line.title, t("The ChatGPT plan's windows, as Codex's sign-in to the same account reads them"));
   for (const w of ws.slice(0, 3)) {
     const used = to100(w.used);
     const m = el("span", "aq-w" + (used >= 90 ? " full" : ""));
@@ -17125,7 +17145,11 @@ function quotaHistoryView(sub, lines = quotaLines(sub), now = Date.now()) {
 function quotaHistoryCard(sub, { picked, shown }) {
   const estimates = quotaCycleHoldsOf(sub, picked);
   const windows = familyWindows(sub.windows).map((w) => {
-    const name = w.pool ? w.pool + " · " + w.name : w.name;
+    // a pool's row is named "Gemini · 5 hours" already (poolWindows), its
+    // own name kept as window: history keeps it under pool and own name,
+    // so the row looked for "Gemini · Gemini · 5 hours" and said no
+    // reading in a cycle the curve drew (tmr11235 on X)
+    const name = w.pool ? w.pool + " · " + (w.window ?? w.name) : w.name;
     const last = shown.find((l) => l.name === name)?.points.at(-1);
     const base = { name: w.name, pool: w.pool, historyMissing: !last };
     if (!last) return base;
@@ -19292,19 +19316,21 @@ function ledGroupSpeed(x) {
 }
 // their mean wait for the first token, 0 for none
 const ledTTFT = (x) => x?.timed > 0 ? x.ttft_ms / x.timed : 0;
+// a speed and a first token's wait (GoForceX on X) are means: they don't add up
+const ledMean = (m) => m === "speed" || m === "ttft";
 // the bytes a point, a share or a part sent up and read back
 const ledBytes = (x) => (+x?.up_bytes || 0) + (+x?.down_bytes || 0);
 // a metric's value of a point or a share, as the chart counts it
-const ledValue = (m, x) => m === "speed" ? ledSpeed(x) : m === "traffic" ? ledBytes(x) : m === "cost" ? +x.cost || 0 : m === "calls" ? +x.calls || 0 : allTokens(x);
+const ledValue = (m, x) => m === "speed" ? ledSpeed(x) : m === "ttft" ? ledTTFT(x) : m === "traffic" ? ledBytes(x) : m === "cost" ? +x.cost || 0 : m === "calls" ? +x.calls || 0 : allTokens(x);
 // of a share in the ranking: a speed is what its row says first, the one of
 // more replies (ledGroupSpeed)
 const ledRankValue = (m, x) => m === "speed" ? ledGroupSpeed(x)?.v || 0 : ledValue(m, x);
 // of a point's part, which has its calls, tokens, cost and speed
-const ledPart = (m, x) => m === "speed" ? ledSpeed(x) : m === "traffic" ? ledBytes(x) : m === "cost" ? +x.cost || 0 : m === "calls" ? +x.calls || 0 : +x.tokens || 0;
+const ledPart = (m, x) => m === "speed" ? ledSpeed(x) : m === "ttft" ? ledTTFT(x) : m === "traffic" ? ledBytes(x) : m === "cost" ? +x.cost || 0 : m === "calls" ? +x.calls || 0 : +x.tokens || 0;
 // a metric as its axis and its values say it: bytes as "2.5 MB", an
 // axis's round "4 MB" without its ".0"
-const ledFormat = (m, v, p) => m === "cost" ? ledMoney(v, p) : m === "traffic" ? fmtBytes(Math.round(v)).replace(/\.0 /, " ") : (m === "speed" ? ledNum : fmtN)(Math.round(v));
-const ledFormatLong = (m, v, p) => m === "speed" ? (v > 0 ? t("{n} tok/s", { n: ledNum(Math.round(v)) }) : "—") : m === "cost" ? (fmtCost({ cost: v, unpriced: 0 }, p) || "—") : m === "traffic" ? fmtBytes(Math.round(v)) : ledNum(Math.round(v));
+const ledFormat = (m, v, p) => m === "ttft" ? ledTook(v) : m === "cost" ? ledMoney(v, p) : m === "traffic" ? fmtBytes(Math.round(v)).replace(/\.0 /, " ") : (m === "speed" ? ledNum : fmtN)(Math.round(v));
+const ledFormatLong = (m, v, p) => m === "speed" ? (v > 0 ? t("{n} tok/s", { n: ledNum(Math.round(v)) }) : "—") : m === "ttft" ? (v > 0 ? ledTook(v) : "—") : m === "cost" ? (fmtCost({ cost: v, unpriced: 0 }, p) || "—") : m === "traffic" ? fmtBytes(Math.round(v)) : ledNum(Math.round(v));
 
 // ledProv is the provider whose currency a cost of share id (by split) of
 // l shows in: the one provider l is filtered to, the share's own (a
@@ -19325,15 +19351,15 @@ function ledAxis(max) {
 
 // what a chart tells apart, most first, and the colour of each: those of the
 // ranking's top, the rest as "Other"; a speed chart's, the most timed
-// (zzzkl3994 on Discord)
+// (zzzkl3994 on Discord), as is a first token's
 function ledCategories(l, split, metric, chart) {
-  const v = chart && metric === "speed" ? (x) => ledSpeed(x) > 0 ? x.decode_n || x.timed || 1 : 0 : (x) => ledRankValue(metric, x);
+  const v = chart && ledMean(metric) ? (x) => ledValue(metric, x) > 0 ? x.decode_n || x.timed || 1 : 0 : (x) => ledRankValue(metric, x);
   const list = (l.by?.[split] || []).slice().sort((a, b) => v(b) - v(a) || allTokens(b) - allTokens(a));
   const top = list.slice(0, LED_SHOWN).map((x, i) => ({ ...x, color: `var(--c${i + 1})` }));
   return { top, rest: list.slice(LED_SHOWN), list };
 }
-// a speed point's timed ones past the colours, faint
-const ledOthers = (by, top, list) => Object.keys(by).filter((k) => ledSpeed(by[k]) > 0 && !top.some((c) => c.id === k))
+// a speed's (or a first token's) point's timed ones past the colours, faint
+const ledOthers = (by, top, list, m) => Object.keys(by).filter((k) => ledValue(m, by[k]) > 0 && !top.some((c) => c.id === k))
   .map((id) => ({ id, name: list.find((x) => x.id === id)?.name, color: "var(--faint)" }));
 
 // when a point is: the hour, the day or the week it stands for
@@ -19371,9 +19397,10 @@ function drawLedColumns(box, l, split, metric, compact, chooseDay, focusDay) {
   const { top, list } = ledCategories(l.chartBy ? { by: l.chartBy } : l, split, metric, true);
   const totals = pts.map((p) => ledValue(metric, p));
   // speeds don't add up: a point's column is how fast all its replies
-  // wrote, and each one told apart is a mark at its own speed on it (#860)
-  const speed = metric === "speed";
-  const max = Math.max(0, ...totals, ...(speed ? pts.flatMap((p) => Object.values(p.by?.[split] || {}).map(ledSpeed)) : []));
+  // wrote, and each one told apart is a mark at its own speed on it (#860);
+  // so is a first token's wait
+  const speed = ledMean(metric);
+  const max = Math.max(0, ...totals, ...(speed ? pts.flatMap((p) => Object.values(p.by?.[split] || {}).map((x) => ledPart(metric, x))) : []));
   if (!(max > 0)) {
     plot.append(el("div", "none", t(metric === "cost" ? "No known price for these requests" : speed ? "No streamed replies timed in this period" : metric === "traffic" ? "No traffic counted in this period" : "Nothing in this period")));
     return;
@@ -19425,8 +19452,8 @@ function drawLedColumns(box, l, split, metric, compact, chooseDay, focusDay) {
     if (speed) {
       // the point's own speed, a track the models' marks sit on
       if (totals[i] > 0) { draw("\0all", "var(--pill)", totals[i]); segs.at(-1).classList.add("all"); }
-      for (const c of [...top, ...ledOthers(by, top, list)]) {
-        const v = ledSpeed(by[c.id]);
+      for (const c of [...top, ...ledOthers(by, top, list, metric)]) {
+        const v = ledPart(metric, by[c.id] || {});
         if (!(v > 0)) continue;
         // a mark above the column gets a leader line to it (#860); colour
         // through style, where var() works
@@ -19471,23 +19498,23 @@ function drawLedColumns(box, l, split, metric, compact, chooseDay, focusDay) {
     tip.replaceChildren(el("b", "", ledWhen(p, l.bucket)));
     // speeds are read across: a model's name in full, its speed and its
     // first token each in a column of their own (#2343)
-    tip.classList.toggle("speed", speed);
+    tip.classList.toggle("speed", metric === "speed");
     const by = p.by?.[split] || {};
-    const rows = [...top, ...(speed ? ledOthers(by, top, list) : [])].map((c) => [name(c), c.color, ledPart(metric, by[c.id] || {}), by[c.id], c.id]);
+    const rows = [...top, ...(speed ? ledOthers(by, top, list, metric) : [])].map((c) => [name(c), c.color, ledPart(metric, by[c.id] || {}), by[c.id], c.id]);
     if (!speed) rows.push([t("Other"), "var(--faint)", Math.max(0, totals[i] - rows.reduce((a, x) => a + x[2], 0))]);
     for (const [nm, color, v, part, id] of rows.filter((x) => x[2] > 0).sort((a, b) => b[2] - a[2])) {
       const row = el("div");
       const sw = el("i");
       sw.style.background = color;
       row.append(sw, el("span", "", nm), el("em", "", val(v, id)));
-      if (speed) row.append(el("em", "ttft", ledTTFT(part) ? t("TTFT {ms}", { ms: ledTook(ledTTFT(part)) }) : ""));
+      if (metric === "speed") row.append(el("em", "ttft", ledTTFT(part) ? t("TTFT {ms}", { ms: ledTook(ledTTFT(part)) }) : ""));
       tip.append(row);
     }
     const sum = el("div", "sum");
     const calls = metric !== "calls" && p.calls ? t(p.calls === 1 ? "{n} request" : "{n} requests", { n: fmtN(p.calls) }) : "";
     if (speed) {
       sum.append(el("span", "", t("All") + (calls ? " · " + calls : "")), el("em", "", val(totals[i])),
-        el("em", "ttft", ledTTFT(p) ? t("TTFT {ms}", { ms: ledTook(ledTTFT(p)) }) : ""));
+        el("em", "ttft", metric === "speed" && ledTTFT(p) ? t("TTFT {ms}", { ms: ledTook(ledTTFT(p)) }) : ""));
     } else {
       sum.append(el("span", "", t("Total")), el("em", "", val(totals[i]) + (calls ? " · " + calls : "")));
     }
@@ -19529,7 +19556,7 @@ function drawLedRank(box, l, split, metric, picked, choose, compact) {
   const kept = box.scrollTop;
   box.replaceChildren();
   const { top, rest, list } = ledCategories(l, split, metric);
-  if (l.chartBy || metric === "speed") {
+  if (l.chartBy || ledMean(metric)) {
     const colors = ledCategories(l.chartBy ? { by: l.chartBy } : l, split, metric, true).top;
     for (const x of top) x.color = colors.find((c) => c.id === x.id)?.color || "var(--faint)";
   }
@@ -19562,11 +19589,11 @@ function drawLedRank(box, l, split, metric, picked, choose, compact) {
     if (x.credited) more.push(ledCredits(x));
     // how fast its replies came, beside what they cost (#860)
     if (metric !== "speed" && gs) more.push(Object.assign(el("span", "rk-speed", gs.text), { title: gs.title }));
-    if (ledTTFT(x)) more.push(t("TTFT {ms}", { ms: ledTook(ledTTFT(x)) }));
+    if (metric !== "ttft" && ledTTFT(x)) more.push(t("TTFT {ms}", { ms: ledTook(ledTTFT(x)) }));
     const hit = cacheHitOf(x);
     if (hit !== null && !compact) more.push(Object.assign(el("span", "rk-hit", t("hit rate {p}", { p: hitPct(hit) })), { title: cacheHitTip(x) }));
     // a speed is no one's share of all
-    if (metric !== "speed") more.push(Math.round((100 * v) / sum) + "%");
+    if (!ledMean(metric)) more.push(Math.round((100 * v) / sum) + "%");
     const l2 = el("div", "rk-b");
     more.forEach((m, i) => l2.append(...(i ? [" · ", m] : [m])));
     if (x.errors) l2.append(" · ", Object.assign(el("span", "rk-bad"), { textContent: t("{n} failed", { n: x.errors }) }));
@@ -20122,7 +20149,6 @@ const DISCORD_SVG = '<svg viewBox="0 0 24 24" width="13" height="13" fill="curre
 const PROV_PREFS = {
   codex: ["codexResetList", "codexWarmList"],
   claude: ["claudeRunList", "claudeWarmList"],
-  "agy-cli": ["agyWarmList"],
   workbuddy: ["wbList"],
   "trae-cn": ["traeList"],
   "minimax-code": ["minimaxList"], "minimax-code-global": ["minimaxList"],
@@ -20173,7 +20199,6 @@ function remountProvPrefs() {
 // provPrefsOn: the agent's warm-up or daily check-in is on
 const provPrefsOn = (a, s = prefs) => !!(a == "codex" ? s.codexWarmup || warmTimes(s.codexWarmAts, s.codexWarmAt).length
   : a == "claude" ? s.claudeWarmup || warmTimes(s.claudeWarmAts, s.claudeWarmAt).length
-  : a == "agy-cli" ? s.agyWarmup
   : s.checkinPlugins?.find((p) => p.id == a)?.on ?? s[PLUGIN_CHECKIN_INHERITS[a]]);
 // provPrefsField: a subscription's warm-up, check-in and resets as the
 // editor's own fields, under Advanced (the owner, 11-09: a block of cards
@@ -20430,11 +20455,10 @@ function renderSettings() {
   $("#keepAwakeSegs").replaceChildren(segs([["off", t("Off")], ["on", t("On")], ["display", t("Screen on too")]],
     !s.keepAwake ? "off" : s.keepAwakeDisplay ? "display" : "on",
     (v) => savePrefs({ ...keep, keepAwake: v !== "off", keepAwakeDisplay: v === "display" })));
-  // its line says what it does; data-en keeps it on a language change
+  // its line says what it does, index.html's data-on or data-display;
+  // data-en keeps it on a language change
   const awakeSub = $("#keepAwakeRow .sub");
-  awakeSub.dataset.en = s.keepAwake && s.keepAwakeDisplay
-    ? "Keeps this computer and its screen awake while magpie runs tasks"
-    : "Keeps this computer awake while magpie runs tasks";
+  awakeSub.dataset.en = awakeSub.dataset[s.keepAwake && s.keepAwakeDisplay ? "display" : "on"];
   awakeSub.textContent = t(awakeSub.dataset.en);
   // the gateway paused (me2seeks on X): agents disconnected and nothing
   // listening, without quitting magpie (gatewaypause.go)
@@ -20459,12 +20483,12 @@ function renderSettings() {
     prefWrite(api("settings/login", { on: v === "on" }))));
   renderLoginAllow(s);
   homeProvPrefRows();
-  // A ChatGPT account's next window started as soon as the last resets, a
-  // Claude account's through Claude Code, and an agy CLI account's, each
-  // pool's with a request to one of its models
+  // A ChatGPT account's next window started as soon as the last resets,
+  // and a Claude account's through Claude Code. Not an agy CLI account's:
+  // a request only to start a window is one agy's own users never send
+  // (xuanwo on X)
   for (const [id, key, sub, warmed] of [["warm", "codexWarmup", "One tiny request starts the next window at once", s.codexWarmed],
-    ["claudeWarm", "claudeWarmup", "One tiny request through Claude Code (Haiku) starts the next window at once", s.claudeWarmed],
-    ["agyWarm", "agyWarmup", "One tiny request through the agy CLI starts each pool's next window at once", s.agyWarmed]]) {
+    ["claudeWarm", "claudeWarmup", "One tiny request through Claude Code (Haiku) starts the next window at once", s.claudeWarmed]]) {
     $(`#${id}Segs`).replaceChildren(segs([["off", t("Off")], ["week", t("Weekly")], ["all", t("Weekly and 5-hour")]],
       s[key] || "off", (v) => savePrefs({ ...keep, [key]: v === "off" ? "" : v })));
     $(`#${id}Sub`).textContent = t(sub) + (warmed ? " · " + t("last started {when}", { when: syncWhen(warmed) }) : "");
@@ -20477,7 +20501,6 @@ function renderSettings() {
   renderAutoResetOwn(s); // and each account's own warm-up time
   renderWarmNow("codex", s.codexUsers, "#warmNowRow");
   renderWarmNow("claude", s.claudeUsers, "#claudeWarmNowRow");
-  renderWarmNow("agy-cli", s.agyUsers, "#agyWarmNowRow");
   // each built-in vendor's daily check-in, shown while one of its
   // accounts is signed in (#694, #811): its switch, how each account went,
   // and under it each account's own (#1902)
@@ -23080,7 +23103,7 @@ function prefsKeep(s) {
     otel: s.otel || {},
     trayUsages: s.trayUsages || [],
     redact: !!s.redact, redactPersonal: !!s.redactPersonal, redactKinds: s.redactKinds || {}, redactWords: s.redactWords || [], redactWordsAnyCase: !!s.redactWordsAnyCase, redactWordsWhole: !!s.redactWordsWhole, redactShape: !!s.redactShape, codexWarmup: s.codexWarmup || "",
-    claudeWarmup: s.claudeWarmup || "", agyWarmup: s.agyWarmup || "", codexWarmAt: s.codexWarmAt || "", claudeWarmAt: s.claudeWarmAt || "",
+    claudeWarmup: s.claudeWarmup || "", codexWarmAt: s.codexWarmAt || "", claudeWarmAt: s.claudeWarmAt || "",
     codexWarmAts: warmTimes(s.codexWarmAts, s.codexWarmAt), claudeWarmAts: warmTimes(s.claudeWarmAts, s.claudeWarmAt), workbuddyCheckin: !!s.workbuddyCheckin, traeCheckin: !!s.traeCheckin, minimaxCheckin: !!s.minimaxCheckin, qoderCheckin: !!s.qoderCheckin, checkinAt: s.checkinAt || "", noStats: !!s.noStats, noUsageStats: !!s.noUsageStats, signInLinkOnly: !!s.signInLinkOnly,
     replyModel: s.replyModel || "", noLoopGuard: !!s.noLoopGuard, claudeLeanPrompt: !!s.claudeLeanPrompt, claudeNoExtraUsage: !!s.claudeNoExtraUsage, claudeRegionHold: !!s.claudeRegionHold, claudeWaysOut: s.claudeWaysOut || [], claudePrintMode: !!s.claudePrintMode, refusalRetries: s.refusalRetries ?? null, retryAfterCap: s.retryAfterCap ?? null,
     noUpdatePill: !!s.noUpdatePill, noAutoUpdate: !!s.noAutoUpdate, updateEvery: s.updateEvery || 360, autoRestart: !!s.autoRestart, noAutoDownload: !!s.noAutoDownload, updateChannel: s.updateChannel || "",
@@ -24937,10 +24960,13 @@ window.noteAccounts = noteAccounts;
     for (const q of quotas || []) if (q.provider === pid && (q.user === u || q.alias === u)) k.push(q.user, q.alias);
     return k.filter(Boolean).map((x) => sk(pid, x));
   };
+  // one eye for a list (a test's account menu, niuniu_8964 on X): open
+  // when every one of them shows
+  const all = (b) => [b._u].flat(), open = (b) => all(b).every((u) => shown.has(sk(b._p, u)));
   const paintEye = (b) => {
-    const on = shown.has(sk(b._p, b._u));
+    const on = open(b), many = Array.isArray(b._u);
     b.setAttribute("aria-pressed", on);
-    b.title = t(on ? "Hide this account" : "Show this account");
+    b.title = t(on ? many ? "Hide these accounts" : "Hide this account" : many ? "Show these accounts" : "Show this account");
     b.querySelector("path").setAttribute("d", on ? EYE : EYE_OFF);
   };
   const redraw = () => {
@@ -24949,18 +24975,19 @@ window.noteAccounts = noteAccounts;
   };
   // Settings' Privacy has the first switch, and the settings follow
   window.hideAccounts = {
+    // u: an account, or a list of them shown and hidden together
     eye: (u, p) => {
       const b = el("button", "acct-eye");
       b._u = u;
       b._p = p;
-      b.setAttribute("aria-label", t("Show this account"));
+      b.setAttribute("aria-label", t(Array.isArray(u) ? "Show these accounts" : "Show this account"));
       b.append(svg("", 13, 2));
       b.firstChild.setAttribute("viewBox", "0 0 24 24");
       paintEye(b);
       b.onclick = (e) => {
         e.stopPropagation();
-        const on = !shown.has(sk(p, u));
-        for (const k of kin(u, p)) on ? shown.add(k) : shown.delete(k);
+        const on = !open(b);
+        for (const x of all(b)) for (const k of kin(x, p)) on ? shown.add(k) : shown.delete(k);
         redraw();
       };
       return b;

@@ -249,21 +249,37 @@ func TestHubCodeOff(t *testing.T) {
 	}
 }
 
-// A builtin is Go, past goja's interrupt: one that allocates gigabytes at
-// once, or a regular expression that backtracks for ever, is ended with
-// the script's process at its memory or its time, and takes neither
-// magpie's memory nor the request with it.
+// A builtin is Go, and may miss the interpreter's checks: a script that
+// allocates gigabytes, or a regular expression that backtracks for ever,
+// is ended at its memory or its time, with the script's process when it
+// has to, and takes neither magpie's memory nor the request with it.
 func TestHubCodeBuiltinsEndWithTheirProcess(t *testing.T) {
-	was := hubCodeWait
-	hubCodeWait = 2 * time.Second
-	t.Cleanup(func() { hubCodeWait = was })
+	was, wasHeap := hubCodeWait, hubCodeHeap
+	t.Cleanup(func() { hubCodeWait, hubCodeHeap = was, wasHeap })
+	// The script runs in this test binary. moejs's "x".repeat(1 << 20)
+	// appends one byte at a time, which under -race makes 20 MB a second
+	// on an idle Mac, against 400 without it: 512 MB took 26s there, and
+	// over 30s on macOS CI (#8099). A cap of 64 MB is the same cap,
+	// reached in about 3s.
+	hubCodeHeap = 64 << 20
 	_, run := codeHub(t, nil)
-	for _, c := range []struct{ code, want string }{
-		{`return "x".repeat(3e9).length`, "memory"},
-		{`return /^(a+)+$(?!x)/.test("a".repeat(40) + "b")`, "didn't finish"},
-		{`const a = []; a.length = 4e9; return a.indexOf(1)`, "didn't finish"},
+	// A case about memory gets a time it can't reach first, and its reply
+	// saying memory is what shows the cap ended it, however long the
+	// machine took to get there. A case about time gets 2s.
+	const memory, timed = 30 * time.Second, 2 * time.Second
+	for _, c := range []struct {
+		code, want string
+		wait       time.Duration
+	}{
+		// refused before anything is allocated
+		{`return "x".repeat(3e9).length`, "Invalid string length", timed},
+		{`const a = []; for (;;) a.push("x".repeat(1 << 20))`, "memory", memory},
+		{`const a = []; for (;;) a.push(new Array(1 << 18).fill(a.length))`, "memory", memory},
+		{`return /^(a+)+$(?!x)/.test("a".repeat(40) + "b")`, "didn't finish", timed},
+		{`const a = []; a.length = 4e9; return a.indexOf(1)`, "didn't finish", timed},
 	} {
 		code, want := c.code, c.want
+		hubCodeWait = c.wait
 		before := hubHeapNow()
 		start := time.Now()
 		got := make(chan mcpReply, 1)
@@ -273,10 +289,12 @@ func TestHubCodeBuiltinsEndWithTheirProcess(t *testing.T) {
 			if !m.Result.IsError || !strings.Contains(codeText(m), want) {
 				t.Fatalf("%s gave %q, want %q", code, codeText(m), want)
 			}
-		case <-time.After(20 * time.Second):
+		case <-time.After(c.wait + 20*time.Second):
 			t.Fatalf("%s still running after %s", code, time.Since(start))
 		}
-		if took := time.Since(start); took > 10*time.Second {
+		// past its time, the gateway ends the helper at the time and its
+		// grace: well before 10s
+		if took := time.Since(start); c.wait == timed && took > 10*time.Second {
 			t.Fatalf("%s took %s", code, took)
 		}
 		if grew := int64(hubHeapNow()) - int64(before); grew > 256<<20 {

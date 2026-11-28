@@ -124,10 +124,8 @@ func (l *Library) hubServerFor(t *Target) *Server {
 	if t.MCP != nil && t.MCP.Format == fmtPiNative {
 		s.about = gateway.HubLine(hubAbouts(ss))
 		for _, a := range ss {
-			if serverKey(a) == artifactsKey {
-				for _, n := range artifactsDirect {
-					s.direct = append(s.direct, gateway.HubToolName(a.Name, n))
-				}
+			for _, n := range ownDirect(a) {
+				s.direct = append(s.direct, gateway.HubToolName(a.Name, n))
 			}
 		}
 	}
@@ -909,6 +907,9 @@ func dialHub(ctx context.Context, s *Server, changed func()) (hubConn, error) {
 		return nil, err
 	}
 	m, err := c.ask(ctx, "initialize", initParams())
+	if v := versionAsked(m, mcpProtocol); err == nil && v != "" {
+		m, err = c.ask(ctx, "initialize", initParamsAt(v))
+	}
 	if err == nil && m.Error != nil {
 		err = healthErr(*initError(m))
 	}
